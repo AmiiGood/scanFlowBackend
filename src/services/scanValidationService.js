@@ -25,7 +25,7 @@ function parseCodgoCaja(codigo) {
 }
 
 function normalizeSku(sku) {
-  return sku.replace(/['{]/g, "-");
+  return sku.replace(/['{]/g, "-").toUpperCase();
 }
 
 function swapCase(str) {
