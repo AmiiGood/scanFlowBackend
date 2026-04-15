@@ -65,4 +65,62 @@ async function getOne(req, res) {
   }
 }
 
-module.exports = { importQRs, getJobStatus, getRecentJobs, getStats, getOne };
+async function matchQRsWithSkus(req, res) {
+  const client = await pool.connect();
+  try {
+    const { rows: pendingRows } = await client.query(
+      `SELECT COUNT(*)::int AS pendientes
+         FROM codigos_qr
+        WHERE sku_id IS NULL`,
+    );
+    const pendientes = pendingRows[0].pendientes;
+
+    if (pendientes === 0) {
+      return res.json({
+        message: "No hay QRs pendientes de match",
+        actualizados: 0,
+        sin_match: 0,
+        pendientes_antes: 0,
+      });
+    }
+
+    await client.query("BEGIN");
+
+    const { rowCount: actualizados } = await client.query(
+      `UPDATE codigos_qr qr
+          SET sku_id = s.id
+         FROM skus s
+        WHERE qr.sku_id IS NULL
+          AND qr.upc = s.upc`,
+    );
+
+    await client.query("COMMIT");
+
+    const { rows: restantesRows } = await client.query(
+      `SELECT COUNT(*)::int AS sin_match
+         FROM codigos_qr
+        WHERE sku_id IS NULL`,
+    );
+
+    res.json({
+      message: "Match completado",
+      pendientes_antes: pendientes,
+      actualizados,
+      sin_match: restantesRows[0].sin_match,
+    });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = {
+  importQRs,
+  getJobStatus,
+  getRecentJobs,
+  getStats,
+  getOne,
+  matchQRsWithSkus,
+};

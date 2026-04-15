@@ -23,5 +23,11 @@ router.post(
   authorize("superadmin"),
   qrController.importQRs,
 );
+router.post(
+  "/match-skus",
+  authenticate,
+  authorize("superadmin"),
+  qrController.matchQRsWithSkus,
+);
 
 module.exports = router;

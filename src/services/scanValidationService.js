@@ -28,13 +28,24 @@ function normalizeSku(sku) {
   return sku.replace(/['{]/g, "-");
 }
 
+function swapCase(str) {
+  return str.replace(/[a-zA-Z]/g, (c) =>
+    c === c.toUpperCase() ? c.toLowerCase() : c.toUpperCase(),
+  );
+}
+
 function normalizeQR(codigo) {
-  // Escáneres con teclado en español mapean `:` → `Ñ` y `/` → `-`
-  // Detectar si parece URL mal codificada: empieza con http o https (con o sin Ñ/-)
-  if (/^https?Ñ/i.test(codigo) || /^https?-/i.test(codigo)) {
-    return codigo
-      .replace(/Ñ/gi, ":")
-      .replace(/-/g, "/");
+  // Escáneres con teclado en español mapean `:` → `Ñ/ñ` y `/` → `-`
+  // Detectar si parece URL mal codificada (con o sin Caps Lock)
+  if (/^https?[Ññ]/i.test(codigo) || /^https?-/i.test(codigo)) {
+    let result = codigo.replace(/[Ññ]/g, ":").replace(/-/g, "/");
+
+    // Si Caps Lock estaba activo, el prefijo viene en mayúscula: invertir todo
+    if (/^HTTPS?:\/\//.test(result)) {
+      result = swapCase(result);
+    }
+
+    return result;
   }
   return codigo;
 }
