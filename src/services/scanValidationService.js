@@ -16,11 +16,21 @@ function parseCodgoCaja(codigo) {
       message: "Todos los campos del código de caja son requeridos",
     };
   }
+
+  // Secuencial puede venir con prefijo (ej. "R011" en reimpresiones) → extraer dígitos
+  const secuencialDigits = secuencial.match(/\d+/)?.[0];
+  if (!secuencialDigits) {
+    throw {
+      status: 400,
+      message: `Secuencial inválido: ${secuencial}`,
+    };
+  }
+
   return {
     codigoUnico,
     sku: normalizeSku(skuRaw),
     cantidadPares: parseInt(cantidadPares),
-    secuencial: parseInt(secuencial),
+    secuencial: parseInt(secuencialDigits),
   };
 }
 
