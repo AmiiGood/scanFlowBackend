@@ -87,13 +87,20 @@ async function reasociarQRaMusical(carton_id, codigo_qr, user_id) {
     );
     const carton = cartonRows[0];
     if (!carton) throw { status: 404, message: "Cartón no encontrado" };
-    if (carton.tipo !== "musical")
-      throw {
-        status: 400,
-        message: "Este endpoint solo es para cartones musicales",
-      };
     if (carton.estado === "completo")
       throw { status: 409, message: "El cartón ya está completo" };
+
+    const totalEsperado = carton.detalles.reduce(
+      (sum, d) => sum + d.cantidad_por_carton,
+      0,
+    );
+    const esParcial = carton.tipo === "mono_sku" && totalEsperado < 12;
+    if (carton.tipo !== "musical" && !esParcial)
+      throw {
+        status: 400,
+        message:
+          "Este endpoint es para cartones musicales o mono_sku parciales (<12 pares)",
+      };
 
     // Validar QR
     const { rows: qrRows } = await client.query(
@@ -111,12 +118,12 @@ async function reasociarQRaMusical(carton_id, codigo_qr, user_id) {
         message: `El QR debe estar en estado escaneado, está: ${qr.estado}`,
       };
 
-    // Validar que el SKU del QR pertenece a este cartón musical
+    // Validar que el SKU del QR pertenece a este cartón
     const detalle = carton.detalles.find((d) => d.sku_id === qr.sku_id);
     if (!detalle)
       throw {
         status: 400,
-        message: `El SKU ${qr.sku_number} no pertenece a este cartón musical`,
+        message: `El SKU ${qr.sku_number} no pertenece a este cartón`,
       };
 
     // Validar que el QR no fue ya reasociado a ningún cartón
@@ -160,10 +167,6 @@ async function reasociarQRaMusical(carton_id, codigo_qr, user_id) {
     );
 
     // Verificar si el cartón está completo
-    const totalEsperado = carton.detalles.reduce(
-      (sum, d) => sum + d.cantidad_por_carton,
-      0,
-    );
     const { rows: totalRows } = await client.query(
       "SELECT COUNT(*) AS total FROM escaneos WHERE carton_id = $1",
       [carton_id],
