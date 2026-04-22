@@ -29,7 +29,7 @@ async function enviarPO(po, skusConCodigos) {
     ProductCategory: T4_CONSTANTS.ProductCategory,
     Gender: T4_CONSTANTS.Gender,
     CfmXfDate: po.cfm_xf_date,
-    Codes: sku.codes,
+    Codes: sku.codes.map((c) => c.split("/").pop()),
   }));
 
   return callApi(url, method, appKey, appSecret, businessData);
@@ -41,7 +41,9 @@ async function cancelarPO(codes) {
   const appSecret = process.env.T4_APP_SECRET;
   const method = "cancelpoassociation";
 
-  return callApi(url, method, appKey, appSecret, { Codes: codes });
+  return callApi(url, method, appKey, appSecret, {
+    Codes: codes.map((c) => c.split("/").pop()),
+  });
 }
 
 module.exports = { enviarPO, cancelarPO };
