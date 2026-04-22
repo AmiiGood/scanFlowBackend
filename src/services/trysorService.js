@@ -43,7 +43,16 @@ async function callApi(
     `[Trysor] Response (primeros 200 chars): ${JSON.stringify(response.data).substring(0, 200)}`,
   );
 
-  return response.data;
+  const data = response.data;
+  const success = String(data?.success ?? "").toLowerCase();
+  if (success !== "true" || data?.errorCode) {
+    const err = new Error(data?.message || "Error del API T4");
+    err.status = 502;
+    err.apiResponse = data;
+    throw err;
+  }
+
+  return data;
 }
 
 module.exports = { callApi };

@@ -7,7 +7,9 @@ async function enviarPOaT4(po_id) {
     await client.query("BEGIN");
 
     const { rows: poRows } = await client.query(
-      "SELECT * FROM purchase_orders WHERE id = $1",
+      `SELECT id, po_number, estado,
+              to_char(cfm_xf_date, 'YYYY-MM-DD') AS cfm_xf_date
+       FROM purchase_orders WHERE id = $1`,
       [po_id],
     );
     const po = poRows[0];
@@ -36,22 +38,33 @@ async function enviarPOaT4(po_id) {
       };
     }
 
-    // Obtener cartones con detalles para enviar
-    const { rows: cartones } = await client.query(
-      `SELECT c.carton_id,
-        json_agg(json_build_object(
-          'sku_number', s.sku_number,
-          'cantidad_por_carton', cd.cantidad_por_carton
-        )) AS detalles
-       FROM cartones c
-       JOIN carton_detalles cd ON cd.carton_id = c.id
-       JOIN skus s ON s.id = cd.sku_id
-       WHERE c.po_id = $1
-       GROUP BY c.carton_id`,
+    // Obtener SKUs con sus códigos QR escaneados en esta PO
+    const { rows: skusConCodigos } = await client.query(
+      `SELECT
+         s.sku_number, s.style_no, s.style_name,
+         s.color, s.color_name, s.size,
+         array_agg(DISTINCT cq.codigo_qr) AS codes
+       FROM codigos_qr cq
+       JOIN skus s ON s.id = cq.sku_id
+       WHERE cq.id IN (
+         SELECT e.codigo_qr_id FROM escaneos e
+         JOIN cajas ca ON ca.id = e.caja_id
+         JOIN cartones c ON c.id = ca.carton_id
+         WHERE c.po_id = $1
+         UNION
+         SELECT e.codigo_qr_id FROM escaneos e
+         JOIN cartones c ON c.id = e.carton_id
+         WHERE c.po_id = $1
+       )
+       GROUP BY s.id, s.sku_number, s.style_no, s.style_name,
+                s.color, s.color_name, s.size`,
       [po_id],
     );
 
-    const respuesta = await t4ApiService.enviarPO(po.po_number, cartones);
+    if (!skusConCodigos.length)
+      throw { status: 400, message: "La PO no tiene códigos QR escaneados" };
+
+    const respuesta = await t4ApiService.enviarPO(po, skusConCodigos);
 
     // Registrar envío
     await client.query(
@@ -108,7 +121,28 @@ async function cancelarPOenT4(po_id) {
         message: "Solo se pueden cancelar POs en estado enviado",
       };
 
-    const respuesta = await t4ApiService.cancelarPO(po.po_number);
+    // Obtener todos los códigos QR asociados a esta PO
+    const { rows: codesRows } = await client.query(
+      `SELECT cq.codigo_qr
+       FROM codigos_qr cq
+       WHERE cq.id IN (
+         SELECT e.codigo_qr_id FROM escaneos e
+         JOIN cajas ca ON ca.id = e.caja_id
+         JOIN cartones c ON c.id = ca.carton_id
+         WHERE c.po_id = $1
+         UNION
+         SELECT e.codigo_qr_id FROM escaneos e
+         JOIN cartones c ON c.id = e.carton_id
+         WHERE c.po_id = $1
+       )`,
+      [po_id],
+    );
+
+    const codes = codesRows.map((r) => r.codigo_qr);
+    if (!codes.length)
+      throw { status: 400, message: "La PO no tiene códigos QR para cancelar" };
+
+    const respuesta = await t4ApiService.cancelarPO(codes);
 
     await client.query(
       `INSERT INTO envios_trysor (po_id, estado, respuesta_api, cancelado_at)
