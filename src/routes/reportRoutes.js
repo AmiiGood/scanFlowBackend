@@ -22,5 +22,11 @@ router.get(
   adminEmbarque,
   r.cartonesPendientesPorPO,
 );
+router.get(
+  "/po/:po_id/detalle-cartones",
+  authenticate,
+  adminEmbarque,
+  r.detalleCartonesPorPO,
+);
 
 module.exports = router;

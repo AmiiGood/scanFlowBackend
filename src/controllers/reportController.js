@@ -103,6 +103,15 @@ async function historialEnviosT4(req, res) {
   }
 }
 
+async function detalleCartonesPorPO(req, res) {
+  try {
+    const result = await reportService.detalleCartonesPorPO(req.params.po_id);
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+}
+
 module.exports = {
   resumenGeneral,
   progresoPorPO,
@@ -115,4 +124,5 @@ module.exports = {
   cartonesPendientesPorPO,
   qrsSinSKU,
   historialEnviosT4,
+  detalleCartonesPorPO,
 };

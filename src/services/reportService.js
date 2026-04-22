@@ -2,7 +2,7 @@ const pool = require("../config/database");
 
 async function resumenGeneral() {
   const { rows: pos } = await pool.query(
-    `SELECT 
+    `SELECT
       COUNT(*) AS total,
       COUNT(*) FILTER (WHERE estado = 'pendiente') AS pendientes,
       COUNT(*) FILTER (WHERE estado = 'en_proceso') AS en_proceso,
@@ -86,7 +86,7 @@ async function progresoPorPO(po_id) {
 
 async function actividadReciente(limite = 50) {
   const { rows: escaneos } = await pool.query(
-    `SELECT 
+    `SELECT
       e.created_at,
       u.nombre AS operador,
       qr.codigo_qr,
@@ -136,7 +136,7 @@ async function skusSinQRs() {
 
 async function produccionPorDia(dias = 30) {
   const { rows } = await pool.query(
-    `SELECT 
+    `SELECT
       DATE(e.created_at) AS fecha,
       COUNT(e.id) AS qrs_escaneados,
       COUNT(DISTINCT e.caja_id) AS cajas_trabajadas,
@@ -151,74 +151,156 @@ async function produccionPorDia(dias = 30) {
 }
 
 async function trazabilidadQR(codigo_qr) {
+  const sufijo = codigo_qr.includes("/") ? codigo_qr.split("/").pop() : codigo_qr;
+
   const { rows: qrRows } = await pool.query(
-    `SELECT 
-      qr.*,
-      s.sku_number, s.style_name, s.size, s.color_name,
-      ca.codigo_caja, ca.estado AS caja_estado,
-      c.carton_id, c.tipo AS carton_tipo, c.estado AS carton_estado,
-      po.po_number, po.estado AS po_estado,
-      u.nombre AS escaneado_por,
-      e.created_at AS escaneado_at
+    `SELECT
+      qr.id, qr.codigo_qr, qr.upc, qr.estado, qr.created_at,
+      s.sku_number, s.style_no, s.style_name, s.size, s.color, s.color_name
      FROM codigos_qr qr
      LEFT JOIN skus s ON s.id = qr.sku_id
-     LEFT JOIN escaneos e ON e.codigo_qr_id = qr.id AND e.caja_id IS NOT NULL
-     LEFT JOIN cajas ca ON ca.id = e.caja_id
-     LEFT JOIN cartones c ON c.id = ca.carton_id
-     LEFT JOIN purchase_orders po ON po.id = c.po_id
-     LEFT JOIN users u ON u.id = e.created_by
-     WHERE qr.codigo_qr = $1`,
-    [codigo_qr],
+     WHERE qr.codigo_qr = $1 OR qr.codigo_qr LIKE '%/' || $2`,
+    [codigo_qr, sufijo],
   );
   if (!qrRows[0]) throw { status: 404, message: "QR no encontrado" };
-  return qrRows[0];
+  const qr = qrRows[0];
+
+  const { rows: escaneos } = await pool.query(
+    `SELECT
+       e.id, e.created_at AS escaneado_at,
+       u.nombre AS escaneado_por,
+       ca.codigo_caja, ca.estado AS caja_estado,
+       c.carton_id, c.tipo AS carton_tipo, c.estado AS carton_estado,
+       po.id AS po_id, po.po_number, po.estado AS po_estado,
+       to_char(po.cfm_xf_date, 'YYYY-MM-DD') AS cfm_xf_date
+     FROM escaneos e
+     LEFT JOIN users u ON u.id = e.created_by
+     LEFT JOIN cajas ca ON ca.id = e.caja_id
+     LEFT JOIN cartones c ON c.id = COALESCE(ca.carton_id, e.carton_id)
+     LEFT JOIN purchase_orders po ON po.id = c.po_id
+     WHERE e.codigo_qr_id = $1
+     ORDER BY e.created_at DESC`,
+    [qr.id],
+  );
+
+  const { rows: envios } = await pool.query(
+    `SELECT et.estado, et.enviado_at, et.cancelado_at
+     FROM envios_trysor et
+     WHERE et.po_id IN (
+       SELECT DISTINCT po.id FROM escaneos e
+       LEFT JOIN cajas ca ON ca.id = e.caja_id
+       LEFT JOIN cartones c ON c.id = COALESCE(ca.carton_id, e.carton_id)
+       LEFT JOIN purchase_orders po ON po.id = c.po_id
+       WHERE e.codigo_qr_id = $1 AND po.id IS NOT NULL
+     )
+     ORDER BY et.created_at DESC`,
+    [qr.id],
+  );
+
+  const principal = escaneos[0] || {};
+  return {
+    ...qr,
+    ...principal,
+    escaneos,
+    envios,
+    total_escaneos: escaneos.length,
+  };
 }
 
 async function cajasPorSKU(params = {}) {
-  const { sku = "", estado = "", page = 1, limit = 50 } = params;
+  const {
+    sku = "",
+    estado = "",
+    po_number = "",
+    operador = "",
+    fecha_desde = "",
+    fecha_hasta = "",
+    page = 1,
+    limit = 50,
+    all = "0",
+  } = params;
+
   const conditions = [];
-  const queryParams = [];
+  const qp = [];
 
   if (sku) {
-    queryParams.push(`%${sku}%`);
-    conditions.push(`s.sku_number ILIKE $${queryParams.length}`);
+    qp.push(`%${sku}%`);
+    conditions.push("s.sku_number ILIKE $" + qp.length);
   }
   if (estado) {
-    queryParams.push(estado);
-    conditions.push(`ca.estado = $${queryParams.length}`);
+    qp.push(estado);
+    conditions.push("ca.estado = $" + qp.length);
+  }
+  if (po_number) {
+    qp.push(`%${po_number}%`);
+    conditions.push(
+      "EXISTS (SELECT 1 FROM cartones c JOIN purchase_orders po ON po.id = c.po_id WHERE c.id = ca.carton_id AND po.po_number ILIKE $" +
+        qp.length +
+        ")",
+    );
+  }
+  if (operador) {
+    qp.push(`%${operador}%`);
+    conditions.push("u.nombre ILIKE $" + qp.length);
+  }
+  if (fecha_desde) {
+    qp.push(fecha_desde);
+    conditions.push("ca.created_at >= $" + qp.length);
+  }
+  if (fecha_hasta) {
+    qp.push(fecha_hasta);
+    conditions.push(
+      "ca.created_at <= $" + qp.length + "::date + INTERVAL '1 day'",
+    );
   }
 
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  const offset = (parseInt(page) - 1) * parseInt(limit);
+  const where = conditions.length ? "WHERE " + conditions.join(" AND ") : "";
 
-  const { rows: total } = await pool.query(
-    `SELECT COUNT(*) FROM cajas ca JOIN skus s ON s.id = ca.sku_id ${where}`,
-    queryParams,
+  const baseSelect = `
+    SELECT
+      ca.id, ca.codigo_caja, ca.estado, ca.cantidad_pares, ca.created_at,
+      s.sku_number, s.style_name, s.size, s.color_name,
+      COUNT(e.id) AS qrs_escaneados,
+      u.nombre AS creado_por,
+      (SELECT po.po_number FROM cartones c
+         JOIN purchase_orders po ON po.id = c.po_id
+         WHERE c.id = ca.carton_id LIMIT 1) AS po_number,
+      (SELECT c.carton_id FROM cartones c WHERE c.id = ca.carton_id LIMIT 1) AS carton_id
+    FROM cajas ca
+    JOIN skus s ON s.id = ca.sku_id
+    LEFT JOIN escaneos e ON e.caja_id = ca.id
+    LEFT JOIN users u ON u.id = ca.created_by
+    ${where}
+    GROUP BY ca.id, s.sku_number, s.style_name, s.size, s.color_name, u.nombre
+    ORDER BY ca.created_at DESC`;
+
+  if (String(all) === "1") {
+    const { rows } = await pool.query(baseSelect, qp);
+    return { data: rows, total: rows.length, page: 1, pages: 1 };
+  }
+
+  const { rows: totalRows } = await pool.query(
+    `SELECT COUNT(*) FROM cajas ca
+     JOIN skus s ON s.id = ca.sku_id
+     LEFT JOIN users u ON u.id = ca.created_by
+     ${where}`,
+    qp,
   );
 
-  queryParams.push(parseInt(limit), offset);
+  const offset = (parseInt(page) - 1) * parseInt(limit);
+  qp.push(parseInt(limit), offset);
+  const limitIdx = qp.length - 1;
+  const offsetIdx = qp.length;
   const { rows } = await pool.query(
-    `SELECT 
-      ca.id, ca.codigo_caja, ca.estado, ca.cantidad_pares, ca.created_at,
-      s.sku_number, s.style_name, s.size,
-      COUNT(e.id) AS qrs_escaneados,
-      u.nombre AS creado_por
-     FROM cajas ca
-     JOIN skus s ON s.id = ca.sku_id
-     LEFT JOIN escaneos e ON e.caja_id = ca.id
-     LEFT JOIN users u ON u.id = ca.created_by
-     ${where}
-     GROUP BY ca.id, s.sku_number, s.style_name, s.size, u.nombre
-     ORDER BY ca.created_at DESC
-     LIMIT $${queryParams.length - 1} OFFSET $${queryParams.length}`,
-    queryParams,
+    baseSelect + " LIMIT $" + limitIdx + " OFFSET $" + offsetIdx,
+    qp,
   );
 
   return {
     data: rows,
-    total: parseInt(total[0].count),
+    total: parseInt(totalRows[0].count),
     page: parseInt(page),
-    pages: Math.ceil(parseInt(total[0].count) / parseInt(limit)),
+    pages: Math.ceil(parseInt(totalRows[0].count) / parseInt(limit)),
   };
 }
 
@@ -230,10 +312,13 @@ async function cartonesPendientesPorPO(po_id) {
   if (!poRows[0]) throw { status: 404, message: "PO no encontrada" };
 
   const { rows } = await pool.query(
-    `SELECT 
+    `SELECT
       c.id, c.carton_id, c.tipo, c.estado,
       json_agg(DISTINCT jsonb_build_object(
         'sku_number', s.sku_number,
+        'style_name', s.style_name,
+        'size', s.size,
+        'color_name', s.color_name,
         'cantidad_esperada', cd.cantidad_por_carton,
         'cantidad_actual', (
           SELECT COUNT(*) FROM escaneos e2
@@ -242,7 +327,13 @@ async function cartonesPendientesPorPO(po_id) {
             OR e2.carton_id = c.id)
             AND q2.sku_id = cd.sku_id
         )
-      )) AS detalles
+      )) AS detalles,
+      SUM(cd.cantidad_por_carton) AS pares_esperados,
+      (
+        SELECT COUNT(*) FROM escaneos e
+        LEFT JOIN cajas ca ON ca.id = e.caja_id
+        WHERE ca.carton_id = c.id OR e.carton_id = c.id
+      ) AS pares_escaneados
      FROM cartones c
      JOIN carton_detalles cd ON cd.carton_id = c.id
      JOIN skus s ON s.id = cd.sku_id
@@ -282,15 +373,79 @@ async function qrsSinSKU(params = {}) {
 
 async function historialEnviosT4() {
   const { rows } = await pool.query(
-    `SELECT 
+    `SELECT
       et.id, et.estado, et.enviado_at, et.cancelado_at, et.created_at,
-      po.po_number, po.cantidad_pares,
+      po.id AS po_id, po.po_number, po.cantidad_pares, po.cantidad_cartones,
+      to_char(po.cfm_xf_date, 'YYYY-MM-DD') AS cfm_xf_date,
+      (SELECT COUNT(*) FROM cartones WHERE po_id = po.id) AS total_cartones,
+      (
+        SELECT COUNT(DISTINCT e.codigo_qr_id)
+        FROM escaneos e
+        LEFT JOIN cajas ca ON ca.id = e.caja_id
+        WHERE ca.carton_id IN (SELECT id FROM cartones WHERE po_id = po.id)
+           OR e.carton_id IN (SELECT id FROM cartones WHERE po_id = po.id)
+      ) AS qrs_asociados,
+      et.respuesta_api->>'message' AS respuesta_mensaje,
+      et.respuesta_api->>'success' AS respuesta_success,
+      et.respuesta_api->>'errorCode' AS respuesta_error_code,
       et.respuesta_api
      FROM envios_trysor et
      JOIN purchase_orders po ON po.id = et.po_id
      ORDER BY et.created_at DESC`,
   );
   return rows;
+}
+
+async function detalleCartonesPorPO(po_id) {
+  const { rows: poRows } = await pool.query(
+    `SELECT id, po_number, cantidad_pares, cantidad_cartones,
+            to_char(cfm_xf_date, 'YYYY-MM-DD') AS cfm_xf_date, estado
+     FROM purchase_orders WHERE id = $1`,
+    [po_id],
+  );
+  if (!poRows[0]) throw { status: 404, message: "PO no encontrada" };
+
+  const { rows } = await pool.query(
+    `SELECT
+       po.po_number,
+       c.carton_id, c.tipo AS carton_tipo, c.estado AS carton_estado,
+       ca.codigo_caja, ca.estado AS caja_estado, ca.cantidad_pares AS caja_pares,
+       s.sku_number, s.style_no, s.style_name, s.size, s.color, s.color_name,
+       cq.codigo_qr, cq.upc, cq.estado AS qr_estado,
+       u.nombre AS escaneado_por,
+       e.created_at AS escaneado_at
+     FROM escaneos e
+     JOIN cajas ca ON ca.id = e.caja_id
+     JOIN cartones c ON c.id = ca.carton_id
+     JOIN purchase_orders po ON po.id = c.po_id
+     LEFT JOIN codigos_qr cq ON cq.id = e.codigo_qr_id
+     LEFT JOIN skus s ON s.id = cq.sku_id
+     LEFT JOIN users u ON u.id = e.created_by
+     WHERE c.po_id = $1
+
+     UNION ALL
+
+     SELECT
+       po.po_number,
+       c.carton_id, c.tipo AS carton_tipo, c.estado AS carton_estado,
+       NULL AS codigo_caja, NULL AS caja_estado, NULL AS caja_pares,
+       s.sku_number, s.style_no, s.style_name, s.size, s.color, s.color_name,
+       cq.codigo_qr, cq.upc, cq.estado AS qr_estado,
+       u.nombre AS escaneado_por,
+       e.created_at AS escaneado_at
+     FROM escaneos e
+     JOIN cartones c ON c.id = e.carton_id
+     JOIN purchase_orders po ON po.id = c.po_id
+     LEFT JOIN codigos_qr cq ON cq.id = e.codigo_qr_id
+     LEFT JOIN skus s ON s.id = cq.sku_id
+     LEFT JOIN users u ON u.id = e.created_by
+     WHERE c.po_id = $1
+
+     ORDER BY carton_id, codigo_caja NULLS LAST, codigo_qr`,
+    [po_id],
+  );
+
+  return { po: poRows[0], detalles: rows, total: rows.length };
 }
 
 module.exports = {
@@ -305,4 +460,5 @@ module.exports = {
   cartonesPendientesPorPO,
   qrsSinSKU,
   historialEnviosT4,
+  detalleCartonesPorPO,
 };
