@@ -330,6 +330,52 @@ async function buscarCarton(codigo) {
   return rows[0];
 }
 
+async function getResumenPO(po_id) {
+  const { rows: poRows } = await pool.query(
+    `SELECT id, po_number, estado,
+            to_char(cfm_xf_date, 'YYYY-MM-DD') AS cfm_xf_date,
+            cantidad_pares, cantidad_cartones
+     FROM purchase_orders WHERE id = $1`,
+    [po_id],
+  );
+  if (!poRows[0]) throw { status: 404, message: "PO no encontrada" };
+
+  const { rows: cartones } = await pool.query(
+    `SELECT
+       c.id, c.carton_id, c.tipo, c.estado,
+       (SELECT SUM(cd.cantidad_por_carton) FROM carton_detalles cd WHERE cd.carton_id = c.id) AS pares_esperados,
+       (
+         SELECT COUNT(*) FROM escaneos e
+         LEFT JOIN cajas ca ON ca.id = e.caja_id
+         WHERE ca.carton_id = c.id OR e.carton_id = c.id
+       ) AS pares_escaneados
+     FROM cartones c
+     WHERE c.po_id = $1
+     ORDER BY c.carton_id`,
+    [po_id],
+  );
+
+  const total = cartones.length;
+  const completos = cartones.filter((c) => c.estado === "completo").length;
+  const pendientes = cartones.filter((c) => c.estado !== "completo");
+
+  const enProceso = pendientes.filter(
+    (c) => parseInt(c.pares_escaneados) > 0,
+  );
+  const sinIniciar = pendientes.filter(
+    (c) => parseInt(c.pares_escaneados) === 0,
+  );
+
+  return {
+    po: poRows[0],
+    total_cartones: total,
+    completos,
+    pendientes: pendientes.length,
+    cartones_en_proceso: enProceso,
+    cartones_sin_iniciar: sinIniciar,
+  };
+}
+
 module.exports = {
   asignarCajaACarton,
   reasociarQRaMusical,
@@ -338,4 +384,5 @@ module.exports = {
   getProgresoMusical,
   buscarCarton,
   actualizarEstadoPO,
+  getResumenPO,
 };

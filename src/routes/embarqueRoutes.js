@@ -12,6 +12,12 @@ router.get(
   embarqueController.getCartonesPorPO,
 );
 router.get(
+  "/po/:po_id/resumen",
+  authenticate,
+  soloEmbarque,
+  embarqueController.getResumenPO,
+);
+router.get(
   "/buscar/:codigo",
   authenticate,
   soloEmbarque,

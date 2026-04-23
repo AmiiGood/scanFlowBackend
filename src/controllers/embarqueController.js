@@ -66,6 +66,15 @@ async function buscarCarton(req, res) {
   }
 }
 
+async function getResumenPO(req, res) {
+  try {
+    const result = await embarqueService.getResumenPO(req.params.po_id);
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+}
+
 module.exports = {
   asignarCaja,
   reasociarQR,
@@ -73,4 +82,5 @@ module.exports = {
   getCartonesPorPO,
   getProgresoMusical,
   buscarCarton,
+  getResumenPO,
 };
