@@ -1,4 +1,5 @@
 const pool = require("../config/database");
+const { normalizeQR } = require("./scanValidationService");
 
 async function resumenGeneral() {
   const { rows: pos } = await pool.query(
@@ -151,7 +152,10 @@ async function produccionPorDia(dias = 30) {
 }
 
 async function trazabilidadQR(codigo_qr) {
-  const sufijo = codigo_qr.includes("/") ? codigo_qr.split("/").pop() : codigo_qr;
+  const normalizado = normalizeQR(codigo_qr.trim());
+  const sufijo = normalizado.includes("/")
+    ? normalizado.split("/").pop()
+    : normalizado;
 
   const { rows: qrRows } = await pool.query(
     `SELECT
@@ -159,8 +163,10 @@ async function trazabilidadQR(codigo_qr) {
       s.sku_number, s.style_no, s.style_name, s.size, s.color, s.color_name
      FROM codigos_qr qr
      LEFT JOIN skus s ON s.id = qr.sku_id
-     WHERE qr.codigo_qr = $1 OR qr.codigo_qr LIKE '%/' || $2`,
-    [codigo_qr, sufijo],
+     WHERE qr.codigo_qr = $1
+        OR qr.codigo_qr = $2
+        OR qr.codigo_qr LIKE '%/' || $3`,
+    [codigo_qr, normalizado, sufijo],
   );
   if (!qrRows[0]) throw { status: 404, message: "QR no encontrado" };
   const qr = qrRows[0];
@@ -415,33 +421,14 @@ async function detalleCartonesPorPO(po_id) {
        u.nombre AS escaneado_por,
        e.created_at AS escaneado_at
      FROM escaneos e
-     JOIN cajas ca ON ca.id = e.caja_id
-     JOIN cartones c ON c.id = ca.carton_id
+     LEFT JOIN cajas ca ON ca.id = e.caja_id
+     JOIN cartones c ON c.id = COALESCE(ca.carton_id, e.carton_id)
      JOIN purchase_orders po ON po.id = c.po_id
      LEFT JOIN codigos_qr cq ON cq.id = e.codigo_qr_id
      LEFT JOIN skus s ON s.id = cq.sku_id
      LEFT JOIN users u ON u.id = e.created_by
      WHERE c.po_id = $1
-
-     UNION ALL
-
-     SELECT
-       po.po_number,
-       c.carton_id, c.tipo AS carton_tipo, c.estado AS carton_estado,
-       NULL AS codigo_caja, NULL AS caja_estado, NULL AS caja_pares,
-       s.sku_number, s.style_no, s.style_name, s.size, s.color, s.color_name,
-       cq.codigo_qr, cq.upc, cq.estado AS qr_estado,
-       u.nombre AS escaneado_por,
-       e.created_at AS escaneado_at
-     FROM escaneos e
-     JOIN cartones c ON c.id = e.carton_id
-     JOIN purchase_orders po ON po.id = c.po_id
-     LEFT JOIN codigos_qr cq ON cq.id = e.codigo_qr_id
-     LEFT JOIN skus s ON s.id = cq.sku_id
-     LEFT JOIN users u ON u.id = e.created_by
-     WHERE c.po_id = $1
-
-     ORDER BY carton_id, codigo_caja NULLS LAST, codigo_qr`,
+     ORDER BY c.carton_id, ca.codigo_caja NULLS LAST, cq.codigo_qr`,
     [po_id],
   );
 

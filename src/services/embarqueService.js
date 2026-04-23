@@ -1,6 +1,46 @@
 const pool = require("../config/database");
 const { normalizeQR } = require("./scanValidationService");
 
+/**
+ * Actualiza el estado de la PO según el estado de sus cartones.
+ * - Todos completos -> 'completo'
+ * - Al menos uno completo -> 'en_proceso'
+ * - No toca POs en estado 'enviado' o 'cancelado'
+ */
+async function actualizarEstadoPO(client, carton_id) {
+  const { rows } = await client.query(
+    `SELECT c.po_id,
+       (SELECT COUNT(*) FROM cartones WHERE po_id = c.po_id) AS total,
+       (SELECT COUNT(*) FROM cartones WHERE po_id = c.po_id AND estado = 'completo') AS completos
+     FROM cartones c
+     WHERE c.id = $1`,
+    [carton_id],
+  );
+  if (!rows[0]) return;
+  const { po_id, total, completos } = rows[0];
+  const totalInt = parseInt(total);
+  const completosInt = parseInt(completos);
+
+  const { rows: poRows } = await client.query(
+    "SELECT estado FROM purchase_orders WHERE id = $1",
+    [po_id],
+  );
+  const estadoActual = poRows[0]?.estado;
+  if (!estadoActual || estadoActual === "enviado" || estadoActual === "cancelado")
+    return;
+
+  let nuevoEstado = estadoActual;
+  if (totalInt > 0 && completosInt === totalInt) nuevoEstado = "completo";
+  else if (completosInt > 0) nuevoEstado = "en_proceso";
+
+  if (nuevoEstado !== estadoActual) {
+    await client.query(
+      "UPDATE purchase_orders SET estado = $1 WHERE id = $2",
+      [nuevoEstado, po_id],
+    );
+  }
+}
+
 async function asignarCajaACarton(caja_id, carton_id) {
   const client = await pool.connect();
   try {
@@ -50,6 +90,8 @@ async function asignarCajaACarton(caja_id, carton_id) {
       "completo",
       carton_id,
     ]);
+
+    await actualizarEstadoPO(client, carton_id);
 
     await client.query("COMMIT");
     return {
@@ -178,6 +220,7 @@ async function reasociarQRaMusical(carton_id, codigo_qr, user_id) {
         "completo",
         carton_id,
       ]);
+      await actualizarEstadoPO(client, carton_id);
     }
 
     await client.query("COMMIT");
@@ -294,4 +337,5 @@ module.exports = {
   getCartonesPorPO,
   getProgresoMusical,
   buscarCarton,
+  actualizarEstadoPO,
 };
