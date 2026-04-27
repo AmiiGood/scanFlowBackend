@@ -120,4 +120,22 @@ async function getProgresoCaja(caja_id) {
   };
 }
 
-module.exports = { iniciarCaja, escanearQR, getProgresoCaja };
+async function buscarCajaPorCodigo(codigo_caja) {
+  const codigoNormalizado = codigo_caja.replace(/['{]/g, "-").trim();
+  const { rows } = await pool.query(
+    `SELECT c.*, s.sku_number, s.style_name, s.size
+     FROM cajas c
+     JOIN skus s ON s.id = c.sku_id
+     WHERE c.codigo_caja = $1`,
+    [codigoNormalizado],
+  );
+  if (!rows[0]) throw { status: 404, message: "Caja no encontrada" };
+  return rows[0];
+}
+
+module.exports = {
+  iniciarCaja,
+  escanearQR,
+  getProgresoCaja,
+  buscarCajaPorCodigo,
+};

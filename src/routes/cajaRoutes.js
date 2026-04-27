@@ -11,6 +11,12 @@ router.get(
   authorize("operador_produccion", "operador_embarque", "superadmin"),
   cajaController.getCajas,
 );
+router.get(
+  "/buscar/:codigo",
+  authenticate,
+  authorize("operador_produccion", "operador_embarque", "superadmin"),
+  cajaController.buscarCaja,
+);
 router.post("/", authenticate, soloProduccion, cajaController.iniciarCaja);
 router.get(
   "/:id",

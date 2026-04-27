@@ -38,6 +38,15 @@ async function getProgreso(req, res) {
   }
 }
 
+async function buscarCaja(req, res) {
+  try {
+    const result = await cajaService.buscarCajaPorCodigo(req.params.codigo);
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+}
+
 async function getCajas(req, res) {
   try {
     const { estado } = req.query;
@@ -67,4 +76,4 @@ async function getCajas(req, res) {
   }
 }
 
-module.exports = { iniciarCaja, escanearQR, getProgreso, getCajas };
+module.exports = { iniciarCaja, escanearQR, getProgreso, getCajas, buscarCaja };
