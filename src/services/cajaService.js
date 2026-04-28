@@ -2,7 +2,7 @@ const pool = require("../config/database");
 const { parseCodgoCaja, validateQR } = require("./scanValidationService");
 
 async function iniciarCaja(codigo_caja, user_id) {
-  const codigoNormalizado = codigo_caja.replace(/['{]/g, "-");
+  const codigoNormalizado = codigo_caja.replace(/['{]/g, "-").toUpperCase();
   const { sku, cantidadPares, secuencial } = parseCodgoCaja(codigoNormalizado);
 
   const { rows: skuRows } = await pool.query(
@@ -121,7 +121,7 @@ async function getProgresoCaja(caja_id) {
 }
 
 async function buscarCajaPorCodigo(codigo_caja) {
-  const codigoNormalizado = codigo_caja.replace(/['{]/g, "-").trim();
+  const codigoNormalizado = codigo_caja.replace(/['{]/g, "-").trim().toUpperCase();
   const { rows } = await pool.query(
     `SELECT c.*, s.sku_number, s.style_name, s.size
      FROM cajas c
