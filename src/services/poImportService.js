@@ -40,7 +40,6 @@ async function importFromExcel(buffer) {
 
     const cantidad_pares = parseInt(poRow.CantidadPares);
     const cantidad_cartones = parseInt(poRow.CantidadCartones);
-    const cfm_xf_date = parseExcelDate(poRow.CfmXfDate);
 
     if (isNaN(cantidad_pares) || isNaN(cantidad_cartones)) {
       results.push({
@@ -55,14 +54,13 @@ async function importFromExcel(buffer) {
       await client.query("BEGIN");
 
       const { rows: poInserted } = await client.query(
-        `INSERT INTO purchase_orders (po_number, cantidad_pares, cantidad_cartones, cfm_xf_date)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO purchase_orders (po_number, cantidad_pares, cantidad_cartones)
+         VALUES ($1, $2, $3)
          ON CONFLICT (po_number) DO UPDATE SET
            cantidad_pares = EXCLUDED.cantidad_pares,
-           cantidad_cartones = EXCLUDED.cantidad_cartones,
-           cfm_xf_date = EXCLUDED.cfm_xf_date
+           cantidad_cartones = EXCLUDED.cantidad_cartones
          RETURNING id`,
-        [po_number, cantidad_pares, cantidad_cartones, cfm_xf_date],
+        [po_number, cantidad_pares, cantidad_cartones],
       );
 
       const po_id = poInserted[0].id;

@@ -4,6 +4,7 @@ const authorize = require("../middleware/authorize");
 const trysorController = require("../controllers/trysorController");
 
 const soloAdmin = authorize("superadmin");
+const adminPO = authorize("superadmin", "operador_po");
 
 router.post(
   "/import-qr",
@@ -14,7 +15,7 @@ router.post(
 router.post(
   "/po/:po_id/enviar",
   authenticate,
-  soloAdmin,
+  adminPO,
   trysorController.enviarPO,
 );
 router.post(
@@ -26,7 +27,7 @@ router.post(
 router.get(
   "/po/:po_id/historial",
   authenticate,
-  soloAdmin,
+  adminPO,
   trysorController.historialEnvios,
 );
 

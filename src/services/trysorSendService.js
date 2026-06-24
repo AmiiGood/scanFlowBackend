@@ -74,7 +74,7 @@ async function enviarPOaT4(po_id) {
     );
 
     await client.query(
-      `UPDATE purchase_orders SET estado = 'enviado' WHERE id = $1`,
+      `UPDATE purchase_orders SET estado = 'enviado', cfm_xf_date = CURRENT_DATE WHERE id = $1`,
       [po_id],
     );
 

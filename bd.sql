@@ -3,7 +3,7 @@ CREATE TABLE users (
   nombre VARCHAR(100) NOT NULL,
   email VARCHAR(150) UNIQUE NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
-  rol VARCHAR(30) NOT NULL CHECK (rol IN ('operador_produccion', 'operador_embarque', 'superadmin')),
+  rol VARCHAR(30) NOT NULL CHECK (rol IN ('operador_produccion', 'operador_embarque', 'operador_po', 'superadmin')),
   activo BOOLEAN DEFAULT true,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

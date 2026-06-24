@@ -9,7 +9,7 @@ router.get("/:id", authenticate, poController.getOne);
 router.post(
   "/import",
   authenticate,
-  authorize("superadmin"),
+  authorize("superadmin", "operador_po"),
   upload.single("file"),
   poController.importPOs,
 );

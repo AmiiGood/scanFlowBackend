@@ -54,8 +54,6 @@ async function asignarCajaACarton(caja_id, carton_id) {
     if (!caja) throw { status: 404, message: "Caja no encontrada" };
     if (caja.estado !== "empacada")
       throw { status: 409, message: "La caja debe estar empacada" };
-    if (caja.carton_id)
-      throw { status: 409, message: "La caja ya está asignada a un cartón" };
 
     const { rows: cartonRows } = await client.query(
       "SELECT * FROM cartones WHERE id = $1",
@@ -72,7 +70,7 @@ async function asignarCajaACarton(caja_id, carton_id) {
       throw { status: 409, message: "El cartón ya está completo" };
 
     const { rows: detalleRows } = await client.query(
-      "SELECT sku_id FROM carton_detalles WHERE carton_id = $1",
+      "SELECT sku_id, cantidad_por_carton FROM carton_detalles WHERE carton_id = $1",
       [carton_id],
     );
     if (detalleRows[0].sku_id !== caja.sku_id) {
@@ -82,22 +80,93 @@ async function asignarCajaACarton(caja_id, carton_id) {
       };
     }
 
-    await client.query("UPDATE cajas SET carton_id = $1 WHERE id = $2", [
-      carton_id,
-      caja_id,
-    ]);
-    await client.query("UPDATE cartones SET estado = $1 WHERE id = $2", [
-      "completo",
-      carton_id,
-    ]);
+    const cartonEsperado = detalleRows[0].cantidad_por_carton;
 
-    await actualizarEstadoPO(client, carton_id);
+    // Caso 1:1 — caja y cartón con la misma cantidad de pares
+    if (caja.cantidad_pares === cartonEsperado) {
+      if (caja.carton_id)
+        throw { status: 409, message: "La caja ya está asignada a un cartón" };
 
-    await client.query("COMMIT");
-    return {
-      message: "Caja asignada al cartón correctamente",
-      carton_id,
-      caja_id,
+      await client.query("UPDATE cajas SET carton_id = $1 WHERE id = $2", [
+        carton_id,
+        caja_id,
+      ]);
+      await client.query("UPDATE cartones SET estado = $1 WHERE id = $2", [
+        "completo",
+        carton_id,
+      ]);
+
+      await actualizarEstadoPO(client, carton_id);
+      await client.query("COMMIT");
+      return {
+        message: "Caja asignada al cartón correctamente",
+        carton_id,
+        caja_id,
+        modo: "directo",
+      };
+    }
+
+    // Caso split — caja con más pares que el cartón (ej. caja 24 → cartón 12)
+    if (
+      caja.cantidad_pares > cartonEsperado &&
+      caja.cantidad_pares % cartonEsperado === 0
+    ) {
+      if (caja.carton_id)
+        throw {
+          status: 409,
+          message:
+            "La caja ya fue asignada directamente a un cartón y no puede dividirse",
+        };
+
+      // QRs de la caja aún no consumidos por ningún cartón (LIFO: últimos escaneados primero)
+      const { rows: disponibles } = await client.query(
+        `SELECT e.codigo_qr_id, e.created_at
+         FROM escaneos e
+         WHERE e.caja_id = $1
+           AND NOT EXISTS (
+             SELECT 1 FROM escaneos e2
+             WHERE e2.codigo_qr_id = e.codigo_qr_id
+               AND e2.carton_id IS NOT NULL
+           )
+         ORDER BY e.created_at DESC
+         LIMIT $2`,
+        [caja_id, cartonEsperado],
+      );
+
+      if (disponibles.length < cartonEsperado) {
+        throw {
+          status: 409,
+          message: `La caja no tiene suficientes pares disponibles para este cartón (disponibles: ${disponibles.length}, requeridos: ${cartonEsperado})`,
+        };
+      }
+
+      // Insertar un escaneo por QR vinculado al cartón (sin caja_id, igual que reasociaciones)
+      for (const d of disponibles) {
+        await client.query(
+          "INSERT INTO escaneos (carton_id, codigo_qr_id, created_by) VALUES ($1, $2, $3)",
+          [carton_id, d.codigo_qr_id, caja.created_by],
+        );
+      }
+
+      await client.query("UPDATE cartones SET estado = $1 WHERE id = $2", [
+        "completo",
+        carton_id,
+      ]);
+
+      await actualizarEstadoPO(client, carton_id);
+      await client.query("COMMIT");
+      return {
+        message: `Cartón completado con ${cartonEsperado} pares de la caja`,
+        carton_id,
+        caja_id,
+        modo: "split",
+        pares_asignados: cartonEsperado,
+      };
+    }
+
+    throw {
+      status: 400,
+      message: `La caja (${caja.cantidad_pares}) no es compatible con el cartón (${cartonEsperado}). Solo se soportan 1:1 o múltiplos exactos (ej. caja 24 → cartón 12).`,
     };
   } catch (err) {
     await client.query("ROLLBACK");

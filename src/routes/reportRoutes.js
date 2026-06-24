@@ -3,8 +3,8 @@ const authenticate = require("../middleware/authenticate");
 const authorize = require("../middleware/authorize");
 const r = require("../controllers/reportController");
 
-const admin = authorize("superadmin");
-const adminEmbarque = authorize("superadmin", "operador_embarque");
+const admin = authorize("superadmin", "operador_po");
+const adminEmbarque = authorize("superadmin", "operador_embarque", "operador_po");
 
 router.get("/resumen", authenticate, admin, r.resumenGeneral);
 router.get("/actividad", authenticate, admin, r.actividadReciente);
