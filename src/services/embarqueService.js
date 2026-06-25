@@ -41,6 +41,44 @@ async function actualizarEstadoPO(client, carton_id) {
   }
 }
 
+/**
+ * Regla de negocio: un QR no puede pertenecer a más de una PO.
+ * Lanza error si alguno de los QRs indicados ya está vinculado a una PO
+ * distinta de `poEsperada`, por cualquiera de los dos caminos posibles:
+ *   - escaneos.caja_id   -> cajas.carton_id   -> cartones.po_id
+ *   - escaneos.carton_id -> cartones.po_id
+ * Una vez que un QR queda ligado a una PO, no puede asignarse a otra.
+ */
+async function assertQRsNoEnOtraPO(client, qrIds, poEsperada) {
+  if (!qrIds.length) return;
+  const { rows } = await client.query(
+    `SELECT DISTINCT q.codigo_qr, po.po_number
+       FROM escaneos e
+       JOIN cajas ca           ON ca.id = e.caja_id
+       JOIN cartones c         ON c.id = ca.carton_id
+       JOIN codigos_qr q       ON q.id = e.codigo_qr_id
+       JOIN purchase_orders po ON po.id = c.po_id
+      WHERE e.codigo_qr_id = ANY($1) AND c.po_id <> $2
+      UNION
+      SELECT DISTINCT q.codigo_qr, po.po_number
+       FROM escaneos e
+       JOIN cartones c         ON c.id = e.carton_id
+       JOIN codigos_qr q       ON q.id = e.codigo_qr_id
+       JOIN purchase_orders po ON po.id = c.po_id
+      WHERE e.codigo_qr_id = ANY($1) AND c.po_id <> $2`,
+    [qrIds, poEsperada],
+  );
+  if (rows.length) {
+    const detalle = rows
+      .map((r) => `${r.codigo_qr} → PO ${r.po_number}`)
+      .join(", ");
+    throw {
+      status: 409,
+      message: `No se puede asignar: ${rows.length} QR(s) ya pertenecen a otra PO y no pueden moverse: ${detalle}`,
+    };
+  }
+}
+
 async function asignarCajaACarton(caja_id, carton_id) {
   const client = await pool.connect();
   try {
@@ -86,6 +124,17 @@ async function asignarCajaACarton(caja_id, carton_id) {
     if (caja.cantidad_pares === cartonEsperado) {
       if (caja.carton_id)
         throw { status: 409, message: "La caja ya está asignada a un cartón" };
+
+      // Ningún QR de la caja puede estar ya ligado a otra PO (ej. reasociado a un musical)
+      const { rows: qrsCaja } = await client.query(
+        "SELECT codigo_qr_id FROM escaneos WHERE caja_id = $1",
+        [caja_id],
+      );
+      await assertQRsNoEnOtraPO(
+        client,
+        qrsCaja.map((r) => r.codigo_qr_id),
+        carton.po_id,
+      );
 
       await client.query("UPDATE cajas SET carton_id = $1 WHERE id = $2", [
         carton_id,
@@ -139,6 +188,12 @@ async function asignarCajaACarton(caja_id, carton_id) {
           message: `La caja no tiene suficientes pares disponibles para este cartón (disponibles: ${disponibles.length}, requeridos: ${cartonEsperado})`,
         };
       }
+
+      await assertQRsNoEnOtraPO(
+        client,
+        disponibles.map((d) => d.codigo_qr_id),
+        carton.po_id,
+      );
 
       // Insertar un escaneo por QR vinculado al cartón (sin caja_id, igual que reasociaciones)
       for (const d of disponibles) {
