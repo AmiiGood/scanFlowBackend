@@ -94,3 +94,11 @@ CREATE TABLE envios_trysor (
   cancelado_at TIMESTAMP,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE configuraciones (
+  clave VARCHAR(100) PRIMARY KEY,
+  valor TEXT NOT NULL,
+  descripcion TEXT,
+  updated_by INTEGER REFERENCES users(id),
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);

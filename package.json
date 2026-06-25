@@ -8,7 +8,8 @@
     "seed:admin": "node src/seeds/createSuperadmin.js",
     "seed:users": "node src/seeds/createUsers.js",
     "seed:clean": "node src/seeds/cleanDb.js",
-    "seed:flow": "node src/seeds/seedFlowData.js"
+    "seed:flow": "node src/seeds/seedFlowData.js",
+    "seed:config": "node src/seeds/seedConfig.js"
   },
   "license": "ISC",
   "type": "commonjs",
