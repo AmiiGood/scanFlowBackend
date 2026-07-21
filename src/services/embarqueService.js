@@ -208,6 +208,21 @@ async function asignarCajaACarton(caja_id, carton_id) {
         carton_id,
       ]);
 
+      // Pares de la caja que aún no ha consumido ningún cartón. Sirve para
+      // avisar al operador que la misma caja alcanza para otro cartón.
+      const { rows: restantesRows } = await client.query(
+        `SELECT COUNT(*)::int AS restantes
+           FROM escaneos e
+          WHERE e.caja_id = $1
+            AND NOT EXISTS (
+              SELECT 1 FROM escaneos e2
+              WHERE e2.codigo_qr_id = e.codigo_qr_id
+                AND e2.carton_id IS NOT NULL
+            )`,
+        [caja_id],
+      );
+      const paresRestantes = restantesRows[0].restantes;
+
       await actualizarEstadoPO(client, carton_id);
       await client.query("COMMIT");
       return {
@@ -216,6 +231,7 @@ async function asignarCajaACarton(caja_id, carton_id) {
         caja_id,
         modo: "split",
         pares_asignados: cartonEsperado,
+        pares_restantes: paresRestantes,
       };
     }
 
