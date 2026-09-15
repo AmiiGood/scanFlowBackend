@@ -33,8 +33,23 @@ const TABLES_ORDERED = [
   "cajas",
   "escaneos",
   "envios_trysor",
+  "configuraciones",
+  "import_jobs",
   "refresh_tokens",
 ];
+
+// Fecha con el offset local. pg lee las columnas TIMESTAMP (sin zona) como hora
+// local; con toISOString() (UTC) las horas se recorrían al restaurar.
+function toLocalTimestamp(d) {
+  const pad = (n, w = 2) => String(n).padStart(w, "0");
+  const off = -d.getTimezoneOffset();
+  const sign = off >= 0 ? "+" : "-";
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}` +
+    `${sign}${pad(Math.floor(Math.abs(off) / 60))}:${pad(Math.abs(off) % 60)}`
+  );
+}
 
 async function generate(req, res) {
   const { includeData = true } = req.body;
@@ -61,6 +76,9 @@ async function generate(req, res) {
     }
     lines.push("");
 
+    // Tablas que sí existen en esta BD → si tienen columna id
+    const existing = new Map();
+
     // Obtener DDL de cada tabla
     for (const table of TABLES_ORDERED) {
       const { rows: cols } = await client.query(
@@ -73,6 +91,7 @@ async function generate(req, res) {
       );
 
       if (!cols.length) continue;
+      existing.set(table, cols.some((c) => c.column_name === "id"));
 
       // Constraints
       const { rows: constraints } = await client.query(
@@ -161,8 +180,14 @@ async function generate(req, res) {
       for (const table of TABLES_ORDERED) {
         // Saltar refresh_tokens — tokens expirados no valen
         if (table === "refresh_tokens") continue;
+        // La tabla no existe en esta BD
+        if (!existing.has(table)) continue;
 
-        const { rows } = await client.query(`SELECT * FROM ${table} ORDER BY id`);
+        // configuraciones no tiene id (su PK es clave)
+        const hasId = existing.get(table);
+        const { rows } = await client.query(
+          `SELECT * FROM ${table}${hasId ? " ORDER BY id" : ""}`,
+        );
         if (!rows.length) continue;
 
         lines.push(`-- ${table}`);
@@ -173,7 +198,7 @@ async function generate(req, res) {
             if (v === null) return "NULL";
             if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
             if (typeof v === "number") return v;
-            if (v instanceof Date) return `'${v.toISOString()}'`;
+            if (v instanceof Date) return `'${toLocalTimestamp(v)}'`;
             if (typeof v === "object") return `'${JSON.stringify(v).replace(/'/g, "''")}'`;
             return `'${String(v).replace(/'/g, "''")}'`;
           });
@@ -181,7 +206,9 @@ async function generate(req, res) {
         }
 
         // Resetear sequences
-        lines.push(`SELECT setval('${table}_id_seq', COALESCE((SELECT MAX(id) FROM ${table}), 1));`);
+        if (hasId) {
+          lines.push(`SELECT setval('${table}_id_seq', COALESCE((SELECT MAX(id) FROM ${table}), 1));`);
+        }
         lines.push("");
       }
     }

@@ -44,9 +44,14 @@ async function callApi(
   );
 
   const data = response.data;
-  const success = String(data?.success ?? "").toLowerCase();
-  if (success !== "true" || data?.errorCode) {
-    const err = new Error(data?.message || "Error del API T4");
+  // T4 (poc.trs315.com) responde en camelCase: success/message/errorCode.
+  // Trysor QR (tusmgteu.trs315.com) responde en PascalCase: Success/Message/ErrorCode.
+  const success = String(data?.success ?? data?.Success ?? "").toLowerCase();
+  const errorCode = data?.errorCode ?? data?.ErrorCode;
+  if (success !== "true" || errorCode) {
+    const err = new Error(
+      data?.message || data?.Message || errorCode || "Error del API T4",
+    );
     err.status = 502;
     err.apiResponse = data;
     throw err;

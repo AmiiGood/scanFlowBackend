@@ -102,3 +102,16 @@ CREATE TABLE configuraciones (
   updated_by INTEGER REFERENCES users(id),
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE import_jobs (
+  id SERIAL PRIMARY KEY,
+  tipo VARCHAR(50) NOT NULL,
+  estado VARCHAR(20) DEFAULT 'pendiente' CHECK (estado IN ('pendiente', 'procesando', 'completado', 'error')),
+  parametros JSONB,
+  resultado JSONB,
+  error TEXT,
+  created_by INTEGER REFERENCES users(id),
+  started_at TIMESTAMP,
+  finished_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
