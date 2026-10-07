@@ -3,7 +3,7 @@ CREATE TABLE users (
   nombre VARCHAR(100) NOT NULL,
   email VARCHAR(150) UNIQUE NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
-  rol VARCHAR(30) NOT NULL CHECK (rol IN ('operador_produccion', 'operador_embarque', 'operador_po', 'superadmin')),
+  rol VARCHAR(30) NOT NULL CHECK (rol IN ('operador_produccion', 'operador_embarque', 'operador_po', 'reportes', 'superadmin')),
   activo BOOLEAN DEFAULT true,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -115,3 +115,11 @@ CREATE TABLE import_jobs (
   finished_at TIMESTAMP,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX idx_escaneos_caja_id ON escaneos (caja_id);
+CREATE INDEX idx_escaneos_carton_id ON escaneos (carton_id);
+CREATE INDEX idx_escaneos_codigo_qr_id ON escaneos (codigo_qr_id);
+CREATE INDEX idx_escaneos_created_at ON escaneos (created_at);
+CREATE INDEX idx_escaneos_created_by ON escaneos (created_by);
+CREATE INDEX idx_carton_detalles_carton_id ON carton_detalles (carton_id);
+CREATE INDEX idx_cartones_po_id ON cartones (po_id);
+CREATE INDEX idx_cajas_carton_id ON cajas (carton_id);

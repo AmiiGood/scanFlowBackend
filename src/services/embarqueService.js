@@ -484,10 +484,14 @@ async function getResumenPO(po_id) {
     `SELECT
        c.id, c.carton_id, c.tipo, c.estado,
        (SELECT SUM(cd.cantidad_por_carton) FROM carton_detalles cd WHERE cd.carton_id = c.id) AS pares_esperados,
+       -- Dos conteos en vez de un OR entre tablas, para que usen los índices.
+       -- Un escaneo trae caja_id (Producción) o carton_id (Embarque), nunca ambos.
        (
          SELECT COUNT(*) FROM escaneos e
-         LEFT JOIN cajas ca ON ca.id = e.caja_id
-         WHERE ca.carton_id = c.id OR e.carton_id = c.id
+         JOIN cajas ca ON ca.id = e.caja_id
+         WHERE ca.carton_id = c.id
+       ) + (
+         SELECT COUNT(*) FROM escaneos e WHERE e.carton_id = c.id
        ) AS pares_escaneados
      FROM cartones c
      WHERE c.po_id = $1

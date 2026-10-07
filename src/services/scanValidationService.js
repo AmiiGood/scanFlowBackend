@@ -1,36 +1,45 @@
 const pool = require("../config/database");
 
+// Etiqueta de caja: codigoUnico$SKU$cantidadPares$secuencial. El secuencial
+// puede traer una letra de prefijo en reimpresiones (ej. "R2068").
+const CAJA_RE = /^\d+\$[A-Z0-9-]+\$\d+\$[A-Z]?\d+$/;
+
+function normalizeCodigoCaja(codigo) {
+  return String(codigo).replace(/['{]/g, "-").trim().toUpperCase();
+}
+
 function parseCodgoCaja(codigo) {
-  const normalized = codigo.replace(/['{]/g, "-");
-  const parts = normalized.split("$");
-  if (parts.length !== 4)
+  const normalized = normalizeCodigoCaja(codigo);
+
+  // Si el QR del par se lee antes de que cargue la caja, llega pegado al
+  // código de la caja (ej. "...$R2068HTTPSÑ--SCAN.CROCS.COM-Q-...").
+  if (/HTTPS?|CROCS\.COM/.test(normalized))
+    throw {
+      status: 400,
+      message:
+        "El código de caja trae un QR pegado. Vuelve a escanear solo la etiqueta de la caja",
+    };
+
+  if (!CAJA_RE.test(normalized))
     throw {
       status: 400,
       message:
         "Formato de caja inválido. Esperado: codigoUnico$sku$cantidadPares$secuencial",
     };
-  const [codigoUnico, skuRaw, cantidadPares, secuencial] = parts;
-  if (!codigoUnico || !skuRaw || !cantidadPares || !secuencial) {
-    throw {
-      status: 400,
-      message: "Todos los campos del código de caja son requeridos",
-    };
-  }
 
-  // Secuencial puede venir con prefijo (ej. "R011" en reimpresiones) → extraer dígitos
-  const secuencialDigits = secuencial.match(/\d+/)?.[0];
-  if (!secuencialDigits) {
+  const [codigoUnico, skuRaw, cantidadPares, secuencial] = normalized.split("$");
+  if (parseInt(cantidadPares) <= 0)
     throw {
       status: 400,
-      message: `Secuencial inválido: ${secuencial}`,
+      message: "La cantidad de pares de la caja debe ser mayor a 0",
     };
-  }
 
   return {
+    codigo: normalized,
     codigoUnico,
     sku: normalizeSku(skuRaw),
     cantidadPares: parseInt(cantidadPares),
-    secuencial: parseInt(secuencialDigits),
+    secuencial: parseInt(secuencial.match(/\d+/)[0]),
   };
 }
 
@@ -60,10 +69,12 @@ function normalizeQR(codigo) {
   return codigo;
 }
 
-async function validateQR(codigo_qr, sku_id) {
+// `db` es el cliente de la transacción del escaneo: FOR UPDATE bloquea el QR
+// para que una segunda lectura simultánea vea el estado ya actualizado.
+async function validateQR(codigo_qr, sku_id, db = pool) {
   const normalizado = normalizeQR(codigo_qr);
-  const { rows } = await pool.query(
-    "SELECT * FROM codigos_qr WHERE codigo_qr = $1",
+  const { rows } = await db.query(
+    "SELECT * FROM codigos_qr WHERE codigo_qr = $1 FOR UPDATE",
     [normalizado],
   );
   const qr = rows[0];
@@ -78,4 +89,9 @@ async function validateQR(codigo_qr, sku_id) {
   return qr;
 }
 
-module.exports = { parseCodgoCaja, validateQR, normalizeQR };
+module.exports = {
+  parseCodgoCaja,
+  validateQR,
+  normalizeQR,
+  normalizeCodigoCaja,
+};

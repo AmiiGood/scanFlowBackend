@@ -33,7 +33,13 @@ async function create(req, res) {
       return res.status(400).json({ error: "Todos los campos son requeridos" });
     }
 
-    const ROLES = ["operador_produccion", "operador_embarque", "superadmin"];
+    const ROLES = [
+      "operador_produccion",
+      "operador_embarque",
+      "operador_po",
+      "reportes",
+      "superadmin",
+    ];
     if (!ROLES.includes(rol)) {
       return res.status(400).json({ error: "Rol inválido" });
     }

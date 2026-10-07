@@ -1,6 +1,13 @@
 const pool = require("../config/database");
 const { normalizeQR } = require("./scanValidationService");
 
+// Los TIMESTAMP de ScanFlow guardan la hora local de planta. Se entregan como
+// texto para que ni el servidor ni el navegador los muevan de zona horaria.
+const fechaHora = (col) => `to_char(${col}, 'YYYY-MM-DD HH24:MI:SS')`;
+// "Hoy" en planta; CURRENT_DATE va en la zona de la sesión (GMT en el servidor).
+const HOY_LOCAL = "(now() AT TIME ZONE 'America/Mexico_City')::date";
+const AHORA_LOCAL = "(now() AT TIME ZONE 'America/Mexico_City')";
+
 async function resumenGeneral() {
   const { rows: pos } = await pool.query(
     `SELECT
@@ -65,7 +72,7 @@ async function progresoPorPO(po_id) {
       ) +
       (
         SELECT COUNT(*) FROM escaneos e
-        WHERE e.caja_id = c.id
+        WHERE e.carton_id = c.id
       ) AS pares_escaneados
      FROM cartones c
      JOIN carton_detalles cd ON cd.carton_id = c.id
@@ -135,18 +142,49 @@ async function skusSinQRs() {
   return rows;
 }
 
+// Por día: pares escaneados en Producción, cajas que se abrieron y cajas que
+// se cerraron (empacadas; la hora de cierre es la de su último par).
 async function produccionPorDia(dias = 30) {
   const { rows } = await pool.query(
-    `SELECT
-      DATE(e.created_at) AS fecha,
-      COUNT(e.id) AS qrs_escaneados,
-      COUNT(DISTINCT e.caja_id) AS cajas_trabajadas,
-      COUNT(DISTINCT e.created_by) AS operadores_activos
-     FROM escaneos e
-     WHERE e.created_at >= NOW() - INTERVAL '${parseInt(dias)} days'
-       AND e.caja_id IS NOT NULL
-     GROUP BY DATE(e.created_at)
-     ORDER BY fecha DESC`,
+    `WITH desde AS (SELECT ${HOY_LOCAL} - ($1::int - 1) AS d),
+     qrs AS (
+       SELECT e.created_at::date AS fecha,
+              COUNT(*) AS qrs_escaneados,
+              COUNT(DISTINCT e.created_by) AS operadores_activos
+         FROM escaneos e, desde
+        WHERE e.caja_id IS NOT NULL AND e.created_at >= desde.d
+        GROUP BY 1
+     ),
+     abiertas AS (
+       SELECT ca.created_at::date AS fecha, COUNT(*) AS cajas_abiertas
+         FROM cajas ca, desde
+        WHERE ca.created_at >= desde.d
+        GROUP BY 1
+     ),
+     cerradas AS (
+       SELECT t.cerrada_at::date AS fecha, COUNT(*) AS cajas_cerradas
+         FROM (SELECT e.caja_id, MAX(e.created_at) AS cerrada_at
+                 FROM escaneos e
+                 JOIN cajas ca ON ca.id = e.caja_id AND ca.estado = 'empacada'
+                GROUP BY e.caja_id) t, desde
+        WHERE t.cerrada_at >= desde.d
+        GROUP BY 1
+     ),
+     fechas AS (
+       SELECT fecha FROM qrs UNION SELECT fecha FROM abiertas
+       UNION SELECT fecha FROM cerradas
+     )
+     SELECT to_char(f.fecha, 'YYYY-MM-DD') AS fecha,
+            COALESCE(q.qrs_escaneados, 0) AS qrs_escaneados,
+            COALESCE(a.cajas_abiertas, 0) AS cajas_abiertas,
+            COALESCE(c.cajas_cerradas, 0) AS cajas_cerradas,
+            COALESCE(q.operadores_activos, 0) AS operadores_activos
+       FROM fechas f
+       LEFT JOIN qrs q ON q.fecha = f.fecha
+       LEFT JOIN abiertas a ON a.fecha = f.fecha
+       LEFT JOIN cerradas c ON c.fecha = f.fecha
+      ORDER BY f.fecha DESC`,
+    [parseInt(dias) || 30],
   );
   return rows;
 }
@@ -218,7 +256,6 @@ async function cajasPorSKU(params = {}) {
     sku = "",
     estado = "",
     po_number = "",
-    operador = "",
     fecha_desde = "",
     fecha_hasta = "",
     page = 1,
@@ -245,10 +282,6 @@ async function cajasPorSKU(params = {}) {
         ")",
     );
   }
-  if (operador) {
-    qp.push(`%${operador}%`);
-    conditions.push("u.nombre ILIKE $" + qp.length);
-  }
   if (fecha_desde) {
     qp.push(fecha_desde);
     conditions.push("ca.created_at >= $" + qp.length);
@@ -264,10 +297,10 @@ async function cajasPorSKU(params = {}) {
 
   const baseSelect = `
     SELECT
-      ca.id, ca.codigo_caja, ca.estado, ca.cantidad_pares, ca.created_at,
+      ca.id, ca.codigo_caja, ca.estado, ca.cantidad_pares,
+      ${fechaHora("ca.created_at")} AS fecha_hora,
       s.sku_number, s.style_name, s.size, s.color_name,
       COUNT(e.id) AS qrs_escaneados,
-      u.nombre AS creado_por,
       (SELECT po.po_number FROM cartones c
          JOIN purchase_orders po ON po.id = c.po_id
          WHERE c.id = ca.carton_id LIMIT 1) AS po_number,
@@ -275,9 +308,8 @@ async function cajasPorSKU(params = {}) {
     FROM cajas ca
     JOIN skus s ON s.id = ca.sku_id
     LEFT JOIN escaneos e ON e.caja_id = ca.id
-    LEFT JOIN users u ON u.id = ca.created_by
     ${where}
-    GROUP BY ca.id, s.sku_number, s.style_name, s.size, s.color_name, u.nombre
+    GROUP BY ca.id, s.sku_number, s.style_name, s.size, s.color_name
     ORDER BY ca.created_at DESC`;
 
   if (String(all) === "1") {
@@ -288,7 +320,6 @@ async function cajasPorSKU(params = {}) {
   const { rows: totalRows } = await pool.query(
     `SELECT COUNT(*) FROM cajas ca
      JOIN skus s ON s.id = ca.sku_id
-     LEFT JOIN users u ON u.id = ca.created_by
      ${where}`,
     qp,
   );
@@ -337,8 +368,10 @@ async function cartonesPendientesPorPO(po_id) {
       SUM(cd.cantidad_por_carton) AS pares_esperados,
       (
         SELECT COUNT(*) FROM escaneos e
-        LEFT JOIN cajas ca ON ca.id = e.caja_id
-        WHERE ca.carton_id = c.id OR e.carton_id = c.id
+        JOIN cajas ca ON ca.id = e.caja_id
+        WHERE ca.carton_id = c.id
+      ) + (
+        SELECT COUNT(*) FROM escaneos e WHERE e.carton_id = c.id
       ) AS pares_escaneados
      FROM cartones c
      JOIN carton_detalles cd ON cd.carton_id = c.id
@@ -435,7 +468,227 @@ async function detalleCartonesPorPO(po_id) {
   return { po: poRows[0], detalles: rows, total: rows.length };
 }
 
+// Todo lo que muestra el Dashboard en una sola llamada. Se refresca seguido,
+// así que solo usa consultas que van por índice (el inventario de QRs, que
+// cuenta 1.3 M de filas, va aparte en resumenGeneral).
+async function dashboard() {
+  const [hoy, porHora, incompletas, pos, actividad] = await Promise.all([
+    pool.query(
+      `SELECT
+         (SELECT COUNT(*) FROM escaneos
+           WHERE caja_id IS NOT NULL AND created_at >= ${HOY_LOCAL}) AS pares_hoy,
+         (SELECT COUNT(*) FROM escaneos
+           WHERE caja_id IS NOT NULL AND created_at >= ${HOY_LOCAL} - 1
+             AND created_at < ${AHORA_LOCAL} - interval '1 day') AS pares_ayer_misma_hora,
+         (SELECT COUNT(*) FROM cajas WHERE created_at >= ${HOY_LOCAL}) AS cajas_abiertas_hoy,
+         (SELECT COUNT(*) FROM (
+            SELECT e.caja_id FROM escaneos e
+              JOIN cajas ca ON ca.id = e.caja_id AND ca.estado = 'empacada'
+             WHERE e.created_at >= ${HOY_LOCAL} - 1
+             GROUP BY e.caja_id
+            HAVING MAX(e.created_at) >= ${HOY_LOCAL}) t) AS cajas_cerradas_hoy,
+         (SELECT ${fechaHora("MAX(created_at)")} FROM escaneos) AS ultima_lectura,
+         (SELECT COUNT(*) FROM purchase_orders WHERE estado = 'completo') AS pos_listas,
+         (SELECT COUNT(*) FROM purchase_orders WHERE estado = 'en_proceso') AS pos_en_proceso,
+         ${fechaHora(AHORA_LOCAL)} AS ahora`,
+    ),
+    // Pares por hora de hoy contra el promedio de esa hora en los 14 días
+    // anteriores con producción (los días sin actividad no bajan el promedio).
+    pool.query(
+      `WITH previos AS (
+         SELECT created_at::date AS dia, EXTRACT(HOUR FROM created_at)::int AS hora, COUNT(*) AS n
+           FROM escaneos
+          WHERE caja_id IS NOT NULL
+            AND created_at >= ${HOY_LOCAL} - 14 AND created_at < ${HOY_LOCAL}
+          GROUP BY 1, 2
+       ),
+       dias AS (SELECT COUNT(DISTINCT dia) AS d FROM previos),
+       hoy AS (
+         SELECT EXTRACT(HOUR FROM created_at)::int AS hora, COUNT(*) AS n
+           FROM escaneos
+          WHERE caja_id IS NOT NULL AND created_at >= ${HOY_LOCAL}
+          GROUP BY 1
+       )
+       SELECT h.hora,
+              COALESCE(hoy.n, 0) AS hoy,
+              ROUND(COALESCE((SELECT SUM(p.n) FROM previos p WHERE p.hora = h.hora), 0)
+                    / GREATEST((SELECT d FROM dias), 1)) AS promedio
+         FROM generate_series(0, 23) AS h(hora)
+         LEFT JOIN hoy ON hoy.hora = h.hora
+        ORDER BY h.hora`,
+    ),
+    // Cajas que se quedaron a medias: abiertas, con al menos un par y sin
+    // actividad en los últimos 10 minutos (las que se están llenando no cuentan).
+    pool.query(
+      `SELECT ca.id, ca.codigo_caja, s.sku_number, ca.cantidad_pares,
+              COUNT(e.id) AS escaneados,
+              ${fechaHora("MAX(e.created_at)")} AS ultima_lectura
+         FROM cajas ca
+         JOIN skus s ON s.id = ca.sku_id
+         JOIN escaneos e ON e.caja_id = ca.id
+        WHERE ca.estado = 'abierta'
+        GROUP BY ca.id, s.sku_number
+       HAVING MAX(e.created_at) < ${AHORA_LOCAL} - interval '10 minutes'
+        ORDER BY MAX(e.created_at) DESC`,
+    ),
+    // POs en curso: primero las listas para enviar, luego por avance.
+    pool.query(
+      `SELECT po.id, po.po_number, po.estado,
+              COUNT(c.id) AS total_cartones,
+              COUNT(c.id) FILTER (WHERE c.estado = 'completo') AS cartones_completos
+         FROM purchase_orders po
+         JOIN cartones c ON c.po_id = po.id
+        WHERE po.estado IN ('en_proceso', 'completo')
+        GROUP BY po.id
+        ORDER BY (po.estado = 'completo') DESC,
+                 COUNT(c.id) FILTER (WHERE c.estado = 'completo')::float / COUNT(c.id) DESC
+        LIMIT 8`,
+    ),
+    pool.query(
+      `SELECT ${fechaHora("e.created_at")} AS fecha_hora, q.codigo_qr,
+              s.sku_number, ca.codigo_caja
+         FROM escaneos e
+         JOIN codigos_qr q ON q.id = e.codigo_qr_id
+         LEFT JOIN skus s ON s.id = q.sku_id
+         LEFT JOIN cajas ca ON ca.id = e.caja_id
+        ORDER BY e.created_at DESC
+        LIMIT 12`,
+    ),
+  ]);
+
+  const inc = incompletas.rows;
+  return {
+    hoy: hoy.rows[0],
+    por_hora: porHora.rows,
+    incompletas: {
+      total: inc.length,
+      falta_uno: inc.filter((c) => c.cantidad_pares - c.escaneados === 1).length,
+      cajas: inc.slice(0, 8),
+    },
+    pos: pos.rows,
+    actividad: actividad.rows,
+  };
+}
+
+// POs para los selectores de reportes, sin límite de cantidad.
+//   filtro = "pendientes"   → solo POs con al menos un cartón sin completar
+//   filtro = "con_escaneos" → solo POs con pares ya ligados a sus cartones
+async function posParaReportes({ filtro = "", search = "" } = {}) {
+  const conditions = [];
+  const qp = [];
+  if (search) {
+    qp.push(`%${search}%`);
+    conditions.push(`po.po_number ILIKE $${qp.length}`);
+  }
+  if (filtro === "con_escaneos") {
+    conditions.push(`EXISTS (
+      SELECT 1 FROM cartones c2
+       WHERE c2.po_id = po.id
+         AND (EXISTS (SELECT 1 FROM cajas ca WHERE ca.carton_id = c2.id)
+              OR EXISTS (SELECT 1 FROM escaneos e WHERE e.carton_id = c2.id)))`);
+  }
+  const where = conditions.length ? "WHERE " + conditions.join(" AND ") : "";
+  const having =
+    filtro === "pendientes"
+      ? "HAVING COUNT(c.id) FILTER (WHERE c.estado <> 'completo') > 0"
+      : "";
+
+  const { rows } = await pool.query(
+    `SELECT po.id, po.po_number, po.estado, po.cantidad_pares,
+            COUNT(c.id) AS total_cartones,
+            COUNT(c.id) FILTER (WHERE c.estado = 'completo') AS cartones_completos,
+            COUNT(c.id) FILTER (WHERE c.estado <> 'completo') AS cartones_pendientes
+       FROM purchase_orders po
+       LEFT JOIN cartones c ON c.po_id = po.id
+       ${where}
+      GROUP BY po.id
+      ${having}
+      ORDER BY po.created_at DESC`,
+    qp,
+  );
+  return rows;
+}
+
+// Una fila por par escaneado en Producción, con su caja y, si ya se embarcó,
+// el cartón y la PO. El cartón sale de la caja (modo directo) o del escaneo de
+// Embarque del mismo QR (musical, parcial o caja dividida).
+async function detalleCajasQR(params = {}) {
+  const {
+    codigo = "",
+    sku = "",
+    po_number = "",
+    estado = "",
+    fecha_desde = "",
+    fecha_hasta = "",
+    page = 1,
+    limit = 100,
+    all = "0",
+  } = params;
+
+  const conditions = [];
+  const qp = [];
+  const add = (sql, value) => {
+    qp.push(value);
+    conditions.push(sql.replace("?", "$" + qp.length));
+  };
+  if (codigo) add("ca.codigo_caja ILIKE ?", `%${codigo.trim()}%`);
+  if (sku) add("s.sku_number ILIKE ?", `%${sku.trim()}%`);
+  if (po_number) add("po.po_number ILIKE ?", `%${po_number.trim()}%`);
+  if (estado) add("ca.estado = ?", estado);
+  if (fecha_desde) add("e.created_at >= ?::date", fecha_desde);
+  if (fecha_hasta) add("e.created_at < ?::date + 1", fecha_hasta);
+  const where = conditions.length ? "WHERE " + conditions.join(" AND ") : "";
+
+  const from = `
+    FROM escaneos e
+    JOIN cajas ca ON ca.id = e.caja_id
+    JOIN skus s ON s.id = ca.sku_id
+    JOIN codigos_qr q ON q.id = e.codigo_qr_id
+    LEFT JOIN escaneos em ON em.codigo_qr_id = e.codigo_qr_id AND em.carton_id IS NOT NULL
+    LEFT JOIN cartones c ON c.id = COALESCE(ca.carton_id, em.carton_id)
+    LEFT JOIN purchase_orders po ON po.id = c.po_id
+    ${where}`;
+
+  const select = `
+    SELECT ca.id AS caja_id, ca.codigo_caja, ca.estado AS caja_estado,
+           ca.cantidad_pares, ${fechaHora("ca.created_at")} AS caja_abierta_at,
+           s.sku_number, s.style_name, s.size, s.color_name,
+           q.codigo_qr, q.upc, q.estado AS qr_estado,
+           ${fechaHora("e.created_at")} AS escaneado_at,
+           c.carton_id, po.po_number
+    ${from}
+    ORDER BY ca.created_at DESC, ca.id, e.created_at`;
+
+  if (String(all) === "1") {
+    const { rows } = await pool.query(select, qp);
+    return { data: rows, total: rows.length, page: 1, pages: 1 };
+  }
+
+  const { rows: totalRows } = await pool.query(
+    `SELECT COUNT(*) AS total, COUNT(DISTINCT ca.id) AS cajas ${from}`,
+    qp,
+  );
+  const total = parseInt(totalRows[0].total);
+  const lim = parseInt(limit) || 100;
+  const pagina = parseInt(page) || 1;
+  qp.push(lim, (pagina - 1) * lim);
+  const { rows } = await pool.query(
+    `${select} LIMIT $${qp.length - 1} OFFSET $${qp.length}`,
+    qp,
+  );
+  return {
+    data: rows,
+    total,
+    cajas: parseInt(totalRows[0].cajas),
+    page: pagina,
+    pages: Math.max(1, Math.ceil(total / lim)),
+  };
+}
+
 module.exports = {
+  dashboard,
+  posParaReportes,
+  detalleCajasQR,
   resumenGeneral,
   progresoPorPO,
   actividadReciente,

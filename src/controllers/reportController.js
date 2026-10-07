@@ -112,7 +112,36 @@ async function detalleCartonesPorPO(req, res) {
   }
 }
 
+async function posParaReportes(req, res) {
+  try {
+    const result = await reportService.posParaReportes(req.query);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function detalleCajasQR(req, res) {
+  try {
+    const result = await reportService.detalleCajasQR(req.query);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function dashboard(req, res) {
+  try {
+    res.json(await reportService.dashboard());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
 module.exports = {
+  dashboard,
+  posParaReportes,
+  detalleCajasQR,
   resumenGeneral,
   progresoPorPO,
   actividadReciente,
