@@ -2,6 +2,7 @@ const router = require("express").Router();
 const authenticate = require("../middleware/authenticate");
 const authorize = require("../middleware/authorize");
 const cajaController = require("../controllers/cajaController");
+const supervisorController = require("../controllers/supervisorController");
 
 const soloProduccion = authorize("operador_produccion", "superadmin");
 
@@ -29,6 +30,13 @@ router.post(
   authenticate,
   soloProduccion,
   cajaController.escanearQR,
+);
+// Un supervisor libera la pantalla de una caja que no se puede completar.
+router.post(
+  "/:id/liberar",
+  authenticate,
+  soloProduccion,
+  supervisorController.liberarCaja,
 );
 
 module.exports = router;

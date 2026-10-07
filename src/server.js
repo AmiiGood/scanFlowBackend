@@ -25,6 +25,7 @@ app.use("/api/reports", require("./routes/reportRoutes"));
 app.use("/api/backup", require("./routes/backupRoutes"));
 app.use("/api/reset", require("./routes/resetRoutes"));
 app.use("/api/config", require("./routes/configRoutes"));
+app.use("/api/supervisores", require("./routes/supervisorRoutes"));
 
 app.use((err, req, res, next) => {
   console.error(err);

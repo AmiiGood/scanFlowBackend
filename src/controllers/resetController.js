@@ -27,4 +27,12 @@ async function resetPO(req, res) {
   }
 }
 
-module.exports = { resetCaja, resetCarton, resetPO };
+async function buscar(req, res) {
+  try {
+    res.json(await resetService.buscar(req.query.tipo, req.query.q));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+}
+
+module.exports = { resetCaja, resetCarton, resetPO, buscar };

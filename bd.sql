@@ -123,3 +123,28 @@ CREATE INDEX idx_escaneos_created_by ON escaneos (created_by);
 CREATE INDEX idx_carton_detalles_carton_id ON carton_detalles (carton_id);
 CREATE INDEX idx_cartones_po_id ON cartones (po_id);
 CREATE INDEX idx_cajas_carton_id ON cajas (carton_id);
+
+CREATE TABLE supervisores (
+  id SERIAL PRIMARY KEY,
+  nombre VARCHAR(100) NOT NULL,
+  codigo_hash CHAR(64) UNIQUE NOT NULL,
+  activo BOOLEAN DEFAULT true,
+  created_by INTEGER REFERENCES users(id),
+  codigo_generado_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE liberaciones_caja (
+  id SERIAL PRIMARY KEY,
+  caja_id INTEGER REFERENCES cajas(id) ON DELETE SET NULL,
+  codigo_caja VARCHAR(255) NOT NULL,
+  supervisor_id INTEGER NOT NULL REFERENCES supervisores(id),
+  motivo VARCHAR(30) NOT NULL,
+  comentario TEXT,
+  pares_escaneados INTEGER NOT NULL,
+  cantidad_pares INTEGER NOT NULL,
+  liberado_por INTEGER REFERENCES users(id),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_liberaciones_caja_created_at ON liberaciones_caja (created_at);

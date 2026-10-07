@@ -410,6 +410,33 @@ async function qrsSinSKU(params = {}) {
   };
 }
 
+// QRs sin SKU agrupados por UPC, con lo que hace falta para cada uno:
+//   ya_esta_en_skus     → el SKU ya se cargó; solo falta "Vincular QRs huérfanos"
+//   coincide_sin_ceros  → existe con distinta cantidad de ceros a la izquierda
+//   ninguno             → falta cargar el SKU
+async function qrsSinSKUPorUPC() {
+  const { rows } = await pool.query(
+    `SELECT q.upc,
+            COUNT(*)::int AS qrs,
+            (COUNT(*) FILTER (WHERE q.estado = 'disponible'))::int AS disponibles,
+            to_char(MIN(q.created_at), 'YYYY-MM-DD') AS primer_import,
+            to_char(MAX(q.created_at), 'YYYY-MM-DD') AS ultimo_import,
+            EXISTS (SELECT 1 FROM skus s WHERE s.upc = q.upc) AS ya_esta_en_skus,
+            (SELECT s.upc FROM skus s
+              WHERE ltrim(s.upc, '0') = ltrim(q.upc, '0') AND s.upc <> q.upc
+              LIMIT 1) AS upc_en_skus
+       FROM codigos_qr q
+      WHERE q.sku_id IS NULL
+      GROUP BY q.upc
+      ORDER BY qrs DESC`,
+  );
+  return {
+    total_upcs: rows.length,
+    total_qrs: rows.reduce((a, r) => a + r.qrs, 0),
+    data: rows,
+  };
+}
+
 async function historialEnviosT4() {
   const { rows } = await pool.query(
     `SELECT
@@ -609,9 +636,10 @@ async function posParaReportes({ filtro = "", search = "" } = {}) {
   return rows;
 }
 
-// Una fila por par escaneado en Producción, con su caja y, si ya se embarcó,
-// el cartón y la PO. El cartón sale de la caja (modo directo) o del escaneo de
-// Embarque del mismo QR (musical, parcial o caja dividida).
+// Una fila por par escaneado en Producción, en orden cronológico, con su caja
+// y, si ya se embarcó, el cartón y la PO. El cartón sale de la caja (modo
+// directo) o del escaneo de Embarque del mismo QR (musical, parcial o caja
+// dividida).
 async function detalleCajasQR(params = {}) {
   const {
     codigo = "",
@@ -653,11 +681,12 @@ async function detalleCajasQR(params = {}) {
     SELECT ca.id AS caja_id, ca.codigo_caja, ca.estado AS caja_estado,
            ca.cantidad_pares, ${fechaHora("ca.created_at")} AS caja_abierta_at,
            s.sku_number, s.style_name, s.size, s.color_name,
-           q.codigo_qr, q.upc, q.estado AS qr_estado,
+           q.codigo_qr, substring(q.codigo_qr from '[^/]+$') AS token,
+           q.upc, q.estado AS qr_estado,
            ${fechaHora("e.created_at")} AS escaneado_at,
            c.carton_id, po.po_number
     ${from}
-    ORDER BY ca.created_at DESC, ca.id, e.created_at`;
+    ORDER BY e.created_at, e.id`;
 
   if (String(all) === "1") {
     const { rows } = await pool.query(select, qp);
@@ -699,6 +728,7 @@ module.exports = {
   cajasPorSKU,
   cartonesPendientesPorPO,
   qrsSinSKU,
+  qrsSinSKUPorUPC,
   historialEnviosT4,
   detalleCartonesPorPO,
 };

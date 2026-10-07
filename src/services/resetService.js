@@ -204,4 +204,61 @@ async function resetPO(po_id) {
   }
 }
 
-module.exports = { resetCaja, resetCarton, resetPO };
+// Búsqueda para la pantalla de Reset: hasta 25 coincidencias por código (o por
+// SKU / PO), sin el límite de "las más recientes" que tenían las listas.
+// Sin texto devuelve las 25 más recientes.
+async function buscar(tipo, q = "") {
+  // Igual que al escanear: el lector con teclado en español cambia - por ' o {.
+  const texto = String(q).replace(/['{]/g, "-").trim().toUpperCase();
+  const patron = `%${texto.replace(/[\\%_]/g, (c) => "\\" + c)}%`;
+
+  if (tipo === "caja") {
+    const { rows } = await pool.query(
+      `SELECT c.id, c.codigo_caja AS codigo, c.estado, c.cantidad_pares,
+              s.sku_number,
+              (SELECT COUNT(*) FROM escaneos e WHERE e.caja_id = c.id)::int AS escaneados,
+              ct.carton_id, po.po_number,
+              to_char(c.created_at, 'YYYY-MM-DD HH24:MI') AS fecha
+         FROM cajas c
+         JOIN skus s ON s.id = c.sku_id
+         LEFT JOIN cartones ct ON ct.id = c.carton_id
+         LEFT JOIN purchase_orders po ON po.id = ct.po_id
+        WHERE $1 = '%%' OR c.codigo_caja ILIKE $1 OR s.sku_number ILIKE $1
+        ORDER BY c.created_at DESC
+        LIMIT 25`,
+      [patron],
+    );
+    return rows;
+  }
+  if (tipo === "carton") {
+    const { rows } = await pool.query(
+      `SELECT ct.id, ct.carton_id AS codigo, ct.tipo, ct.estado, po.po_number,
+              (SELECT SUM(cd.cantidad_por_carton) FROM carton_detalles cd WHERE cd.carton_id = ct.id)::int AS pares_esperados
+         FROM cartones ct
+         JOIN purchase_orders po ON po.id = ct.po_id
+        WHERE $1 = '%%' OR ct.carton_id ILIKE $1 OR po.po_number ILIKE $1
+        ORDER BY po.created_at DESC, ct.carton_id
+        LIMIT 25`,
+      [patron],
+    );
+    return rows;
+  }
+  if (tipo === "po") {
+    const { rows } = await pool.query(
+      `SELECT po.id, po.po_number AS codigo, po.estado, po.cantidad_pares,
+              COUNT(ct.id)::int AS total_cartones,
+              (COUNT(ct.id) FILTER (WHERE ct.estado = 'completo'))::int AS cartones_completos
+         FROM purchase_orders po
+         LEFT JOIN cartones ct ON ct.po_id = po.id
+        WHERE $1 = '%%' OR po.po_number ILIKE $1
+        GROUP BY po.id
+        ORDER BY po.created_at DESC
+        LIMIT 25`,
+      [patron],
+    );
+    return rows;
+  }
+  throw { status: 400, message: "Tipo de búsqueda no válido" };
+}
+
+module.exports = { resetCaja, resetCarton, resetPO, buscar };

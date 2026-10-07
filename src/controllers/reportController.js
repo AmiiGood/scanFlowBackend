@@ -94,6 +94,14 @@ async function qrsSinSKU(req, res) {
   }
 }
 
+async function qrsSinSKUPorUPC(req, res) {
+  try {
+    res.json(await reportService.qrsSinSKUPorUPC());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
 async function historialEnviosT4(req, res) {
   try {
     const result = await reportService.historialEnviosT4();
@@ -152,6 +160,7 @@ module.exports = {
   cajasPorSKU,
   cartonesPendientesPorPO,
   qrsSinSKU,
+  qrsSinSKUPorUPC,
   historialEnviosT4,
   detalleCartonesPorPO,
 };
