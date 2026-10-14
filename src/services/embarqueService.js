@@ -79,13 +79,15 @@ async function assertQRsNoEnOtraPO(client, qrIds, poEsperada) {
   }
 }
 
-async function asignarCajaACarton(caja_id, carton_id) {
+async function asignarCajaACarton(caja_id, carton_id, user_id) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
+    // Caja y cartón bloqueados: dos estaciones no pueden tomar los mismos
+    // pares ni llenar dos veces el mismo cartón.
     const { rows: cajaRows } = await client.query(
-      "SELECT * FROM cajas WHERE id = $1",
+      "SELECT * FROM cajas WHERE id = $1 FOR UPDATE",
       [caja_id],
     );
     const caja = cajaRows[0];
@@ -94,7 +96,7 @@ async function asignarCajaACarton(caja_id, carton_id) {
       throw { status: 409, message: "La caja debe estar empacada" };
 
     const { rows: cartonRows } = await client.query(
-      "SELECT * FROM cartones WHERE id = $1",
+      "SELECT * FROM cartones WHERE id = $1 FOR UPDATE",
       [carton_id],
     );
     const carton = cartonRows[0];
@@ -119,6 +121,95 @@ async function asignarCajaACarton(caja_id, carton_id) {
     }
 
     const cartonEsperado = detalleRows[0].cantidad_por_carton;
+
+    // Cartón parcial (menos de 12 pares): la caja aporta solo los pares que
+    // le faltan al cartón, aunque ya tenga pares sueltos escaneados QR por QR.
+    // Si a la caja le quedan menos, aporta los que tenga y el cartón sigue
+    // abierto. La caja nunca queda ligada completa al cartón.
+    if (cartonEsperado < 12) {
+      if (caja.carton_id)
+        throw {
+          status: 409,
+          message: "La caja ya fue asignada completa a otro cartón",
+        };
+
+      const { rows: enCarton } = await client.query(
+        "SELECT COUNT(*)::int AS n FROM escaneos WHERE carton_id = $1",
+        [carton_id],
+      );
+      const faltan = cartonEsperado - enCarton[0].n;
+      if (faltan <= 0)
+        throw { status: 409, message: "El cartón ya tiene todos sus pares" };
+
+      const { rows: disponibles } = await client.query(
+        `SELECT e.codigo_qr_id
+           FROM escaneos e
+          WHERE e.caja_id = $1
+            AND NOT EXISTS (
+              SELECT 1 FROM escaneos e2
+               WHERE e2.codigo_qr_id = e.codigo_qr_id
+                 AND e2.carton_id IS NOT NULL
+            )
+          ORDER BY e.created_at DESC
+          LIMIT $2`,
+        [caja_id, faltan],
+      );
+      if (!disponibles.length)
+        throw {
+          status: 409,
+          message: "La caja ya no tiene pares disponibles: todos están en otros cartones",
+        };
+
+      await assertQRsNoEnOtraPO(
+        client,
+        disponibles.map((d) => d.codigo_qr_id),
+        carton.po_id,
+      );
+
+      for (const d of disponibles) {
+        await client.query(
+          "INSERT INTO escaneos (carton_id, codigo_qr_id, created_by) VALUES ($1, $2, $3)",
+          [carton_id, d.codigo_qr_id, user_id || caja.created_by],
+        );
+      }
+
+      const enCartonAhora = enCarton[0].n + disponibles.length;
+      const completo = enCartonAhora >= cartonEsperado;
+      if (completo) {
+        await client.query("UPDATE cartones SET estado = $1 WHERE id = $2", [
+          "completo",
+          carton_id,
+        ]);
+        await actualizarEstadoPO(client, carton_id);
+      }
+
+      const { rows: restantesRows } = await client.query(
+        `SELECT COUNT(*)::int AS restantes
+           FROM escaneos e
+          WHERE e.caja_id = $1
+            AND NOT EXISTS (
+              SELECT 1 FROM escaneos e2
+               WHERE e2.codigo_qr_id = e.codigo_qr_id
+                 AND e2.carton_id IS NOT NULL
+            )`,
+        [caja_id],
+      );
+
+      await client.query("COMMIT");
+      return {
+        message: completo
+          ? "Cartón completado con pares de la caja"
+          : `Se tomaron ${disponibles.length} pares de la caja`,
+        carton_id,
+        caja_id,
+        modo: "parcial",
+        completo,
+        pares_asignados: disponibles.length,
+        pares_en_carton: enCartonAhora,
+        total: cartonEsperado,
+        pares_restantes: restantesRows[0].restantes,
+      };
+    }
 
     // Caso 1:1 — caja y cartón con la misma cantidad de pares
     if (caja.cantidad_pares === cartonEsperado) {

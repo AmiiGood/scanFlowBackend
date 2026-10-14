@@ -7,6 +7,7 @@ async function asignarCaja(req, res) {
     const result = await embarqueService.asignarCajaACarton(
       caja_id,
       req.params.id,
+      req.user.id,
     );
     res.json(result);
   } catch (err) {
