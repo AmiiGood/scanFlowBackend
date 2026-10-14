@@ -79,6 +79,9 @@ async function assertQRsNoEnOtraPO(client, qrIds, poEsperada) {
   }
 }
 
+// Pares por cama dentro de una caja de 12.
+const CAMA = 6;
+
 async function asignarCajaACarton(caja_id, carton_id, user_id) {
   const client = await pool.connect();
   try {
@@ -122,11 +125,16 @@ async function asignarCajaACarton(caja_id, carton_id, user_id) {
 
     const cartonEsperado = detalleRows[0].cantidad_por_carton;
 
-    // Cartón parcial (menos de 12 pares): la caja aporta solo los pares que
-    // le faltan al cartón, aunque ya tenga pares sueltos escaneados QR por QR.
-    // Si a la caja le quedan menos, aporta los que tenga y el cartón sigue
-    // abierto. La caja nunca queda ligada completa al cartón.
+    // Cartones de menos de 12 pares. Solo el de 6 acepta caja: una caja de 12
+    // trae dos camas de 6, y cada escaneo de la caja aporta una cama (la de
+    // arriba primero: los últimos 6 pares escaneados en Producción). El resto
+    // de cantidades (3, 4, 7, 8…) se llenan QR por QR.
     if (cartonEsperado < 12) {
+      if (cartonEsperado !== CAMA)
+        throw {
+          status: 400,
+          message: `Los cartones de ${cartonEsperado} pares se llenan QR por QR`,
+        };
       if (caja.carton_id)
         throw {
           status: 409,
@@ -137,9 +145,11 @@ async function asignarCajaACarton(caja_id, carton_id, user_id) {
         "SELECT COUNT(*)::int AS n FROM escaneos WHERE carton_id = $1",
         [carton_id],
       );
-      const faltan = cartonEsperado - enCarton[0].n;
-      if (faltan <= 0)
-        throw { status: 409, message: "El cartón ya tiene todos sus pares" };
+      if (enCarton[0].n > 0)
+        throw {
+          status: 409,
+          message: "Este cartón ya tiene pares sueltos: complétalo con QR",
+        };
 
       const { rows: disponibles } = await client.query(
         `SELECT e.codigo_qr_id
@@ -150,64 +160,47 @@ async function asignarCajaACarton(caja_id, carton_id, user_id) {
                WHERE e2.codigo_qr_id = e.codigo_qr_id
                  AND e2.carton_id IS NOT NULL
             )
-          ORDER BY e.created_at DESC
-          LIMIT $2`,
-        [caja_id, faltan],
+          ORDER BY e.created_at DESC`,
+        [caja_id],
       );
       if (!disponibles.length)
         throw {
           status: 409,
           message: "La caja ya no tiene pares disponibles: todos están en otros cartones",
         };
+      // Si de la caja ya salieron pares sueltos, sus camas no están completas.
+      if (disponibles.length % CAMA !== 0)
+        throw {
+          status: 409,
+          message: `A la caja le quedan ${disponibles.length} pares, no camas completas de ${CAMA}: escanea los QR uno por uno`,
+        };
 
+      const cama = disponibles.slice(0, CAMA);
       await assertQRsNoEnOtraPO(
         client,
-        disponibles.map((d) => d.codigo_qr_id),
+        cama.map((d) => d.codigo_qr_id),
         carton.po_id,
       );
-
-      for (const d of disponibles) {
+      for (const d of cama) {
         await client.query(
           "INSERT INTO escaneos (carton_id, codigo_qr_id, created_by) VALUES ($1, $2, $3)",
           [carton_id, d.codigo_qr_id, user_id || caja.created_by],
         );
       }
-
-      const enCartonAhora = enCarton[0].n + disponibles.length;
-      const completo = enCartonAhora >= cartonEsperado;
-      if (completo) {
-        await client.query("UPDATE cartones SET estado = $1 WHERE id = $2", [
-          "completo",
-          carton_id,
-        ]);
-        await actualizarEstadoPO(client, carton_id);
-      }
-
-      const { rows: restantesRows } = await client.query(
-        `SELECT COUNT(*)::int AS restantes
-           FROM escaneos e
-          WHERE e.caja_id = $1
-            AND NOT EXISTS (
-              SELECT 1 FROM escaneos e2
-               WHERE e2.codigo_qr_id = e.codigo_qr_id
-                 AND e2.carton_id IS NOT NULL
-            )`,
-        [caja_id],
-      );
+      await client.query("UPDATE cartones SET estado = $1 WHERE id = $2", [
+        "completo",
+        carton_id,
+      ]);
+      await actualizarEstadoPO(client, carton_id);
 
       await client.query("COMMIT");
       return {
-        message: completo
-          ? "Cartón completado con pares de la caja"
-          : `Se tomaron ${disponibles.length} pares de la caja`,
+        message: `Cartón completado con una cama de ${CAMA} pares`,
         carton_id,
         caja_id,
-        modo: "parcial",
-        completo,
-        pares_asignados: disponibles.length,
-        pares_en_carton: enCartonAhora,
-        total: cartonEsperado,
-        pares_restantes: restantesRows[0].restantes,
+        modo: "cama",
+        pares_asignados: CAMA,
+        pares_restantes: disponibles.length - CAMA,
       };
     }
 
