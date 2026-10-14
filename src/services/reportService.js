@@ -4,6 +4,18 @@ const { normalizeQR } = require("./scanValidationService");
 // Los TIMESTAMP de ScanFlow guardan la hora local de planta. Se entregan como
 // texto para que ni el servidor ni el navegador los muevan de zona horaria.
 const fechaHora = (col) => `to_char(${col}, 'YYYY-MM-DD HH24:MI:SS')`;
+// Turnos de planta (los mismos que el DBX): C 00–08, A 08–16, B 16–24. Se
+// calculan con la hora guardada, que ya es la hora local.
+const TURNOS = {
+  C: "col::time < '08:00'",
+  A: "col::time >= '08:00' AND col::time < '16:00'",
+  B: "col::time >= '16:00'",
+};
+const turnoDe = (col) =>
+  `CASE WHEN ${col}::time < '08:00' THEN 'Turno C'
+        WHEN ${col}::time < '16:00' THEN 'Turno A'
+        ELSE 'Turno B' END`;
+
 // "Hoy" en planta; CURRENT_DATE va en la zona de la sesión (GMT en el servidor).
 const HOY_LOCAL = "(now() AT TIME ZONE 'America/Mexico_City')::date";
 const AHORA_LOCAL = "(now() AT TIME ZONE 'America/Mexico_City')";
@@ -648,6 +660,7 @@ async function detalleCajasQR(params = {}) {
     estado = "",
     fecha_desde = "",
     fecha_hasta = "",
+    turno = "",
     page = 1,
     limit = 100,
     all = "0",
@@ -655,6 +668,7 @@ async function detalleCajasQR(params = {}) {
 
   const conditions = [];
   const qp = [];
+  if (Object.hasOwn(TURNOS, turno)) conditions.push(`(${TURNOS[turno].replace(/col/g, "e.created_at")})`);
   const add = (sql, value) => {
     qp.push(value);
     conditions.push(sql.replace("?", "$" + qp.length));
@@ -684,6 +698,7 @@ async function detalleCajasQR(params = {}) {
            q.codigo_qr, substring(q.codigo_qr from '[^/]+$') AS token,
            q.upc, q.estado AS qr_estado,
            ${fechaHora("e.created_at")} AS escaneado_at,
+           ${turnoDe("e.created_at")} AS turno,
            c.carton_id, po.po_number
     ${from}
     ORDER BY e.created_at, e.id`;
