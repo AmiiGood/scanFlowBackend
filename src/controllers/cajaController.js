@@ -9,7 +9,7 @@ async function iniciarCaja(req, res) {
     const caja = await cajaService.iniciarCaja(codigo_caja, req.user.id);
     res.status(201).json(caja);
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
 }
 
@@ -25,7 +25,7 @@ async function escanearQR(req, res) {
     );
     res.json(result);
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
 }
 

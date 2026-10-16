@@ -34,6 +34,14 @@ async function iniciarCaja(codigo_caja, user_id) {
     "SELECT * FROM cajas WHERE codigo_caja = $1",
     [codigoNormalizado],
   );
+  // Volver a escanear una caja ya completa la dejaba como caja activa en
+  // 24/24: cada QR respondía "ya está empacada" y no se podía liberar.
+  if (existing[0].estado === "empacada")
+    throw {
+      status: 409,
+      code: "CAJA_EMPACADA",
+      message: `Esta caja ya está completa (${existing[0].cantidad_pares}/${existing[0].cantidad_pares}). Escanea otra caja`,
+    };
   return existing[0];
 }
 
@@ -52,7 +60,7 @@ async function escanearQR(caja_id, codigo_qr, user_id) {
     const caja = cajaRows[0];
     if (!caja) throw { status: 404, message: "Caja no encontrada" };
     if (caja.estado === "empacada")
-      throw { status: 409, message: "La caja ya está empacada" };
+      throw { status: 409, code: "CAJA_EMPACADA", message: "La caja ya está empacada" };
 
     const qr = await validateQR(codigo_qr, caja.sku_id, client);
 
