@@ -729,10 +729,132 @@ async function detalleCajasQR(params = {}) {
   };
 }
 
+// Una fila por QR ya usado (escaneado o enviado) con todo su recorrido: SKU,
+// caja de Producción, cartón, PO y envío a T4. La fecha es la del escaneo de
+// Producción o, si el par entró directo a un cartón, la del escaneo de Embarque.
+async function detalleQRs(params = {}) {
+  const {
+    codigo = "",
+    sku = "",
+    caja = "",
+    po_number = "",
+    estado = "",
+    embarcado = "",
+    fecha_desde = "",
+    fecha_hasta = "",
+    turno = "",
+    page = 1,
+    limit = 100,
+    all = "0",
+  } = params;
+
+  const conditions = [
+    estado === "escaneado" || estado === "enviado"
+      ? `q.estado = '${estado}'`
+      : "q.estado IN ('escaneado', 'enviado')",
+  ];
+  const qp = [];
+  const add = (sql, ...values) => {
+    let out = sql;
+    for (const v of values) {
+      qp.push(v);
+      out = out.replace("?", "$" + qp.length);
+    }
+    conditions.push(out);
+  };
+  const fecha = "COALESCE(ep.created_at, ee.created_at)";
+  if (Object.hasOwn(TURNOS, turno)) conditions.push(`(${TURNOS[turno].replace(/col/g, fecha)})`);
+  if (codigo) add("q.codigo_qr ILIKE ?", `%${codigo.trim()}%`);
+  if (sku) add("s.sku_number ILIKE ?", `%${sku.trim()}%`);
+  if (caja) add("ca.codigo_caja ILIKE ?", `%${caja.trim()}%`);
+  if (po_number) add("po.po_number ILIKE ?", `%${po_number.trim()}%`);
+  if (embarcado === "si") conditions.push("ct.id IS NOT NULL");
+  if (embarcado === "no") conditions.push("ct.id IS NULL");
+  if (fecha_desde) add(`${fecha} >= ?::date`, fecha_desde);
+  if (fecha_hasta) add(`${fecha} < ?::date + 1`, fecha_hasta);
+  // Con rango de fechas se parte de los escaneos de esos días (índice por
+  // fecha) en lugar de recorrer todos los QR usados.
+  if (fecha_desde || fecha_hasta) {
+    add(
+      `q.id IN (SELECT codigo_qr_id FROM escaneos
+                 WHERE created_at >= COALESCE(?::date, '-infinity')
+                   AND created_at < COALESCE(?::date + 1, 'infinity'))`,
+      fecha_desde || null,
+      fecha_hasta || null,
+    );
+  }
+
+  const from = `
+    FROM codigos_qr q
+    LEFT JOIN skus s ON s.id = q.sku_id
+    LEFT JOIN LATERAL (
+          SELECT e.caja_id, e.created_at FROM escaneos e
+           WHERE e.codigo_qr_id = q.id AND e.caja_id IS NOT NULL
+           ORDER BY e.id LIMIT 1) ep ON true
+    LEFT JOIN cajas ca ON ca.id = ep.caja_id
+    LEFT JOIN LATERAL (
+          SELECT e.carton_id, e.created_at FROM escaneos e
+           WHERE e.codigo_qr_id = q.id AND e.carton_id IS NOT NULL
+           ORDER BY e.id LIMIT 1) ee ON true
+    LEFT JOIN cartones ct ON ct.id = COALESCE(ca.carton_id, ee.carton_id)
+    LEFT JOIN purchase_orders po ON po.id = ct.po_id
+    WHERE ${conditions.join(" AND ")}`;
+
+  const select = `
+    SELECT q.id, q.codigo_qr, substring(q.codigo_qr from '[^/]+$') AS token,
+           q.upc, q.estado AS qr_estado,
+           s.sku_number, s.style_no, s.style_name, s.color_name, s.size,
+           ${fechaHora(fecha)} AS escaneado_at,
+           CASE WHEN ${fecha} IS NOT NULL THEN ${turnoDe(fecha)} END AS turno,
+           ca.codigo_caja, ca.estado AS caja_estado,
+           ct.carton_id, ct.tipo AS carton_tipo, ct.estado AS carton_estado,
+           CASE WHEN ca.carton_id IS NOT NULL THEN 'Caja completa'
+                WHEN ee.carton_id IS NOT NULL THEN 'Por par / cama / división'
+           END AS como_se_embarco,
+           ${fechaHora("ee.created_at")} AS embarcado_at,
+           po.po_number, po.estado AS po_estado,
+           to_char(po.cfm_xf_date, 'YYYY-MM-DD') AS cfm_xf_date,
+           (SELECT ${fechaHora("et.enviado_at")} FROM envios_trysor et
+             WHERE et.po_id = po.id AND et.estado = 'enviado'
+             ORDER BY et.created_at DESC LIMIT 1) AS enviado_t4_at
+    ${from}
+    ORDER BY ${fecha} NULLS LAST, q.id`;
+
+  if (String(all) === "1") {
+    const { rows } = await pool.query(select, qp);
+    return { data: rows, total: rows.length, page: 1, pages: 1 };
+  }
+
+  const { rows: totalRows } = await pool.query(
+    `SELECT COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE q.estado = 'enviado') AS enviados,
+            COUNT(*) FILTER (WHERE ct.id IS NOT NULL) AS embarcados
+     ${from}`,
+    qp,
+  );
+  const total = parseInt(totalRows[0].total);
+  const lim = parseInt(limit) || 100;
+  const pagina = parseInt(page) || 1;
+  qp.push(lim, (pagina - 1) * lim);
+  const { rows } = await pool.query(
+    `${select} LIMIT $${qp.length - 1} OFFSET $${qp.length}`,
+    qp,
+  );
+  return {
+    data: rows,
+    total,
+    enviados: parseInt(totalRows[0].enviados),
+    embarcados: parseInt(totalRows[0].embarcados),
+    page: pagina,
+    pages: Math.max(1, Math.ceil(total / lim)),
+  };
+}
+
 module.exports = {
   dashboard,
   posParaReportes,
   detalleCajasQR,
+  detalleQRs,
   resumenGeneral,
   progresoPorPO,
   actividadReciente,

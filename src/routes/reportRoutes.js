@@ -24,6 +24,7 @@ router.get("/qrs-sin-sku", authenticate, admin, r.qrsSinSKU);
 router.get("/qrs-sin-sku/upcs", authenticate, admin, r.qrsSinSKUPorUPC);
 router.get("/pos", authenticate, admin, r.posParaReportes);
 router.get("/detalle-cajas", authenticate, admin, r.detalleCajasQR);
+router.get("/detalle-qrs", authenticate, admin, r.detalleQRs);
 router.get(
   "/liberaciones",
   authenticate,
