@@ -1,14 +1,19 @@
 const poImportService = require("../services/poImportService");
 const pool = require("../config/database");
 
+// ?modo=validar solo revisa el archivo y devuelve qué pasaría con cada PO y
+// cartón; sin modo (o modo=cargar) carga lo válido.
 async function importPOs(req, res) {
   try {
     if (!req.file)
       return res.status(400).json({ error: "Archivo Excel requerido" });
-    const result = await poImportService.importFromExcel(req.file.buffer);
+    const result =
+      req.query.modo === "validar"
+        ? await poImportService.analizar(req.file.buffer)
+        : await poImportService.importar(req.file.buffer);
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 }
 

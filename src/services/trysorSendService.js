@@ -7,7 +7,7 @@ async function enviarPOaT4(po_id) {
     await client.query("BEGIN");
 
     const { rows: poRows } = await client.query(
-      `SELECT id, po_number, estado,
+      `SELECT id, po_number, estado, cantidad_cartones,
               to_char(cfm_xf_date, 'YYYY-MM-DD') AS cfm_xf_date
        FROM purchase_orders WHERE id = $1`,
       [po_id],
@@ -31,6 +31,13 @@ async function enviarPOaT4(po_id) {
     const { total, completos } = cartonStats[0];
     if (parseInt(total) === 0)
       throw { status: 400, message: "La PO no tiene cartones" };
+    // Si la importación rechazó cartones (por ejemplo, por SKUs que no estaban
+    // en el catálogo), la PO se enviaría a T4 sin ellos.
+    if (parseInt(total) < po.cantidad_cartones)
+      throw {
+        status: 409,
+        message: `La PO está incompleta: tiene ${total} de ${po.cantidad_cartones} cartones importados. Importa los que faltan antes de enviarla`,
+      };
     if (parseInt(total) !== parseInt(completos)) {
       throw {
         status: 409,

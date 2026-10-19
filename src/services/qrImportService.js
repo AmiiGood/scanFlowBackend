@@ -1,6 +1,21 @@
 const pool = require("../config/database");
 const { callApi } = require("./trysorService");
 
+const UPC_VALIDO = /^\d{12,14}$/;
+
+// Trysor a veces manda el UPC como quedó en un Excel: "191448610806.0" o en
+// notación científica. Solo se convierte si no se pierde ningún dígito
+// ("1.91448610806E+11" → "191448610806"); "1.91E+11" ya no tiene arreglo.
+function normalizarUpc(valor) {
+  let s = String(valor ?? "").trim().replace(/\s+/g, "").replace(/\.0+$/, "");
+  const m = s.match(/^(\d)(?:\.(\d+))?E\+?(\d+)$/i);
+  if (m) {
+    const digitos = m[1] + (m[2] || "");
+    if (digitos.length === Number(m[3]) + 1) s = digitos;
+  }
+  return s;
+}
+
 async function importFromTrysor(lastGetTime = "2000-01-01 00:00:00") {
   const url = process.env.TRYSOR_API_URL;
   const appKey = process.env.TRYSOR_APP_KEY;
@@ -26,7 +41,13 @@ async function importFromTrysor(lastGetTime = "2000-01-01 00:00:00") {
 
   let inserted = 0;
   let skipped = 0;
+  let reparados = 0;
+  let upcInvalido = 0;
+  const muestrasUpcInvalido = [];
   const errors = [];
+
+  const { rows: skuRows } = await pool.query("SELECT id, upc FROM skus");
+  const skuPorUpc = new Map(skuRows.map((s) => [s.upc, s.id]));
 
   const BATCH = 500;
   for (let i = 0; i < items.length; i += BATCH) {
@@ -34,29 +55,38 @@ async function importFromTrysor(lastGetTime = "2000-01-01 00:00:00") {
     await Promise.all(
       batch.map(async (item) => {
         const codigo_qr = String(item.QrCode || "").trim();
-        const upc = String(item.UPC || "").trim();
+        const upc = normalizarUpc(item.UPC);
 
         if (!codigo_qr || !upc) {
           errors.push({ item, error: "QrCode o UPC vacío" });
           return;
         }
+        // Un QR con el UPC dañado no se podría ligar a ningún SKU: no se carga.
+        if (!UPC_VALIDO.test(upc)) {
+          upcInvalido++;
+          if (muestrasUpcInvalido.length < 20)
+            muestrasUpcInvalido.push({ codigo_qr, upc: String(item.UPC) });
+          return;
+        }
 
         try {
-          const { rows: skuRows } = await pool.query(
-            "SELECT id FROM skus WHERE upc = $1",
-            [upc],
-          );
-          const sku_id = skuRows[0]?.id || null;
-
-          const { rowCount } = await pool.query(
+          const sku_id = skuPorUpc.get(upc) || null;
+          // Si el QR ya existe con un UPC dañado (de una importación anterior)
+          // y nadie lo ha usado, se repara con el UPC correcto.
+          const { rows } = await pool.query(
             `INSERT INTO codigos_qr (codigo_qr, upc, sku_id)
-           VALUES ($1, $2, $3)
-           ON CONFLICT (codigo_qr) DO NOTHING`,
+             VALUES ($1, $2, $3)
+             ON CONFLICT (codigo_qr) DO UPDATE
+               SET upc = EXCLUDED.upc, sku_id = EXCLUDED.sku_id
+               WHERE codigos_qr.estado = 'disponible'
+                 AND codigos_qr.upc !~ '^[0-9]{12,14}$'
+             RETURNING (xmax = 0) AS insertado`,
             [codigo_qr, upc, sku_id],
           );
 
-          if (rowCount) inserted++;
-          else skipped++;
+          if (!rows[0]) skipped++;
+          else if (rows[0].insertado) inserted++;
+          else reparados++;
         } catch (err) {
           errors.push({ codigo_qr, error: err.message });
         }
@@ -68,6 +98,9 @@ async function importFromTrysor(lastGetTime = "2000-01-01 00:00:00") {
     total_api: items.length,
     inserted,
     skipped,
+    reparados,
+    upc_invalido: upcInvalido,
+    muestras_upc_invalido: muestrasUpcInvalido,
     errors: errors.slice(0, 50),
     total_errors: errors.length,
   };
@@ -127,4 +160,4 @@ async function getRecentJobs(limit = 10) {
   return rows;
 }
 
-module.exports = { importFromTrysor, launchImportJob, getJob, getRecentJobs };
+module.exports = { importFromTrysor, launchImportJob, getJob, getRecentJobs, normalizarUpc };

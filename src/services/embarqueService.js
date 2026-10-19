@@ -9,15 +9,16 @@ const { normalizeQR } = require("./scanValidationService");
  */
 async function actualizarEstadoPO(client, carton_id) {
   const { rows } = await client.query(
-    `SELECT c.po_id,
+    `SELECT c.po_id, po.cantidad_cartones,
        (SELECT COUNT(*) FROM cartones WHERE po_id = c.po_id) AS total,
        (SELECT COUNT(*) FROM cartones WHERE po_id = c.po_id AND estado = 'completo') AS completos
      FROM cartones c
+     JOIN purchase_orders po ON po.id = c.po_id
      WHERE c.id = $1`,
     [carton_id],
   );
   if (!rows[0]) return;
-  const { po_id, total, completos } = rows[0];
+  const { po_id, total, completos, cantidad_cartones } = rows[0];
   const totalInt = parseInt(total);
   const completosInt = parseInt(completos);
 
@@ -30,7 +31,10 @@ async function actualizarEstadoPO(client, carton_id) {
     return;
 
   let nuevoEstado = estadoActual;
-  if (totalInt > 0 && completosInt === totalInt) nuevoEstado = "completo";
+  // Con cartones sin importar (menos de los que dice su Excel) la PO no está
+  // completa aunque todos los importados lo estén.
+  if (totalInt > 0 && completosInt === totalInt && totalInt >= cantidad_cartones)
+    nuevoEstado = "completo";
   else if (completosInt > 0) nuevoEstado = "en_proceso";
 
   if (nuevoEstado !== estadoActual) {

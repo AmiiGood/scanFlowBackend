@@ -1,14 +1,19 @@
 const skuImportService = require("../services/skuImportService");
 const pool = require("../config/database");
 
+// ?modo=validar solo revisa el archivo y devuelve qué pasaría con cada fila;
+// sin modo (o modo=cargar) carga las filas válidas.
 async function importSkus(req, res) {
   try {
     if (!req.file)
       return res.status(400).json({ error: "Archivo Excel requerido" });
-    const result = await skuImportService.importFromExcel(req.file.buffer);
+    const result =
+      req.query.modo === "validar"
+        ? await skuImportService.analizar(req.file.buffer)
+        : await skuImportService.importar(req.file.buffer);
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 }
 
