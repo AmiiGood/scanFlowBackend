@@ -1,2 +1,4 @@
 *.env
 node_modules
+# Respuestas crudas de Trysor (scripts/verificar_upc_trysor.js)
+scripts/respuesta_trysor_*.txt
