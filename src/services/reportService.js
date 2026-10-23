@@ -270,6 +270,7 @@ async function cajasPorSKU(params = {}) {
     po_number = "",
     fecha_desde = "",
     fecha_hasta = "",
+    usuario = "",
     page = 1,
     limit = 50,
     all = "0",
@@ -278,6 +279,10 @@ async function cajasPorSKU(params = {}) {
   const conditions = [];
   const qp = [];
 
+  if (parseInt(usuario)) {
+    qp.push(parseInt(usuario));
+    conditions.push("ca.created_by = $" + qp.length);
+  }
   if (sku) {
     qp.push(`%${sku}%`);
     conditions.push("s.sku_number ILIKE $" + qp.length);
@@ -312,6 +317,7 @@ async function cajasPorSKU(params = {}) {
       ca.id, ca.codigo_caja, ca.estado, ca.cantidad_pares,
       ${fechaHora("ca.created_at")} AS fecha_hora,
       s.sku_number, s.style_name, s.size, s.color_name,
+      u.nombre AS usuario,
       COUNT(e.id) AS qrs_escaneados,
       (SELECT po.po_number FROM cartones c
          JOIN purchase_orders po ON po.id = c.po_id
@@ -319,9 +325,10 @@ async function cajasPorSKU(params = {}) {
       (SELECT c.carton_id FROM cartones c WHERE c.id = ca.carton_id LIMIT 1) AS carton_id
     FROM cajas ca
     JOIN skus s ON s.id = ca.sku_id
+    LEFT JOIN users u ON u.id = ca.created_by
     LEFT JOIN escaneos e ON e.caja_id = ca.id
     ${where}
-    GROUP BY ca.id, s.sku_number, s.style_name, s.size, s.color_name
+    GROUP BY ca.id, s.sku_number, s.style_name, s.size, s.color_name, u.nombre
     ORDER BY ca.created_at DESC`;
 
   if (String(all) === "1") {
@@ -661,6 +668,7 @@ async function detalleCajasQR(params = {}) {
     fecha_desde = "",
     fecha_hasta = "",
     turno = "",
+    usuario = "",
     page = 1,
     limit = 100,
     all = "0",
@@ -669,6 +677,10 @@ async function detalleCajasQR(params = {}) {
   const conditions = [];
   const qp = [];
   if (Object.hasOwn(TURNOS, turno)) conditions.push(`(${TURNOS[turno].replace(/col/g, "e.created_at")})`);
+  if (parseInt(usuario)) {
+    qp.push(parseInt(usuario));
+    conditions.push("e.created_by = $" + qp.length);
+  }
   const add = (sql, value) => {
     qp.push(value);
     conditions.push(sql.replace("?", "$" + qp.length));
@@ -686,6 +698,7 @@ async function detalleCajasQR(params = {}) {
     JOIN cajas ca ON ca.id = e.caja_id
     JOIN skus s ON s.id = ca.sku_id
     JOIN codigos_qr q ON q.id = e.codigo_qr_id
+    LEFT JOIN users u ON u.id = e.created_by
     LEFT JOIN escaneos em ON em.codigo_qr_id = e.codigo_qr_id AND em.carton_id IS NOT NULL
     LEFT JOIN cartones c ON c.id = COALESCE(ca.carton_id, em.carton_id)
     LEFT JOIN purchase_orders po ON po.id = c.po_id
@@ -699,6 +712,7 @@ async function detalleCajasQR(params = {}) {
            q.upc, q.estado AS qr_estado,
            ${fechaHora("e.created_at")} AS escaneado_at,
            ${turnoDe("e.created_at")} AS turno,
+           u.nombre AS usuario,
            c.carton_id, po.po_number
     ${from}
     ORDER BY e.created_at, e.id`;
@@ -743,6 +757,7 @@ async function detalleQRs(params = {}) {
     fecha_desde = "",
     fecha_hasta = "",
     turno = "",
+    usuario = "",
     page = 1,
     limit = 100,
     all = "0",
@@ -768,6 +783,7 @@ async function detalleQRs(params = {}) {
   if (sku) add("s.sku_number ILIKE ?", `%${sku.trim()}%`);
   if (caja) add("ca.codigo_caja ILIKE ?", `%${caja.trim()}%`);
   if (po_number) add("po.po_number ILIKE ?", `%${po_number.trim()}%`);
+  if (parseInt(usuario)) add("? IN (ep.created_by, ee.created_by)", parseInt(usuario));
   if (embarcado === "si") conditions.push("ct.id IS NOT NULL");
   if (embarcado === "no") conditions.push("ct.id IS NULL");
   if (fecha_desde) add(`${fecha} >= ?::date`, fecha_desde);
@@ -788,14 +804,16 @@ async function detalleQRs(params = {}) {
     FROM codigos_qr q
     LEFT JOIN skus s ON s.id = q.sku_id
     LEFT JOIN LATERAL (
-          SELECT e.caja_id, e.created_at FROM escaneos e
+          SELECT e.caja_id, e.created_at, e.created_by FROM escaneos e
            WHERE e.codigo_qr_id = q.id AND e.caja_id IS NOT NULL
            ORDER BY e.id LIMIT 1) ep ON true
+    LEFT JOIN users up ON up.id = ep.created_by
     LEFT JOIN cajas ca ON ca.id = ep.caja_id
     LEFT JOIN LATERAL (
-          SELECT e.carton_id, e.created_at FROM escaneos e
+          SELECT e.carton_id, e.created_at, e.created_by FROM escaneos e
            WHERE e.codigo_qr_id = q.id AND e.carton_id IS NOT NULL
            ORDER BY e.id LIMIT 1) ee ON true
+    LEFT JOIN users ue ON ue.id = ee.created_by
     LEFT JOIN cartones ct ON ct.id = COALESCE(ca.carton_id, ee.carton_id)
     LEFT JOIN purchase_orders po ON po.id = ct.po_id
     WHERE ${conditions.join(" AND ")}`;
@@ -806,6 +824,8 @@ async function detalleQRs(params = {}) {
            s.sku_number, s.style_no, s.style_name, s.color_name, s.size,
            ${fechaHora(fecha)} AS escaneado_at,
            CASE WHEN ${fecha} IS NOT NULL THEN ${turnoDe(fecha)} END AS turno,
+           COALESCE(up.nombre, ue.nombre) AS usuario,
+           ue.nombre AS usuario_embarque,
            ca.codigo_caja, ca.estado AS caja_estado,
            ct.carton_id, ct.tipo AS carton_tipo, ct.estado AS carton_estado,
            CASE WHEN ca.carton_id IS NOT NULL THEN 'Caja completa'
@@ -850,7 +870,21 @@ async function detalleQRs(params = {}) {
   };
 }
 
+// Usuarios para el filtro de los reportes: los que han escaneado algo y los
+// operadores activos (aunque todavía no escaneen).
+async function usuariosReporte() {
+  const { rows } = await pool.query(
+    `SELECT u.id, u.nombre, u.rol, u.activo
+       FROM users u
+      WHERE EXISTS (SELECT 1 FROM escaneos e WHERE e.created_by = u.id)
+         OR (u.activo AND u.rol IN ('operador_produccion', 'operador_embarque'))
+      ORDER BY u.nombre`,
+  );
+  return rows;
+}
+
 module.exports = {
+  usuariosReporte,
   dashboard,
   posParaReportes,
   detalleCajasQR,

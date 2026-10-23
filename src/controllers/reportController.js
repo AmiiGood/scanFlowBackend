@@ -146,6 +146,14 @@ async function detalleQRs(req, res) {
   }
 }
 
+async function usuariosReporte(req, res) {
+  try {
+    res.json(await reportService.usuariosReporte());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
 async function dashboard(req, res) {
   try {
     res.json(await reportService.dashboard());
@@ -155,6 +163,7 @@ async function dashboard(req, res) {
 }
 
 module.exports = {
+  usuariosReporte,
   dashboard,
   posParaReportes,
   detalleCajasQR,
