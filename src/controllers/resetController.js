@@ -35,4 +35,13 @@ async function buscar(req, res) {
   }
 }
 
-module.exports = { resetCaja, resetCarton, resetPO, buscar };
+async function desasociarCaja(req, res) {
+  try {
+    res.json(await resetService.desasociarCaja(req.params.id));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+}
+
+module.exports = {
+  desasociarCaja, resetCaja, resetCarton, resetPO, buscar };

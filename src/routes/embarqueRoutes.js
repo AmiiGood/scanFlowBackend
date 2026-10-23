@@ -5,6 +5,12 @@ const embarqueController = require("../controllers/embarqueController");
 
 const soloEmbarque = authorize("operador_embarque", "superadmin");
 
+// Musicales por PO: se escribe la PO y se escanean las cajas (o QR por QR).
+router.get("/musical/po", authenticate, soloEmbarque, embarqueController.buscarPOMusical);
+router.get("/musical/po/:po_id", authenticate, soloEmbarque, embarqueController.getResumenMusical);
+router.post("/musical/po/:po_id/caja", authenticate, soloEmbarque, embarqueController.asignarCajaAPOMusical);
+router.post("/musical/po/:po_id/qr", authenticate, soloEmbarque, embarqueController.asignarQRAPOMusical);
+
 router.get(
   "/po/:po_id",
   authenticate,

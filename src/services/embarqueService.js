@@ -1,5 +1,5 @@
 const pool = require("../config/database");
-const { normalizeQR } = require("./scanValidationService");
+const { normalizeQR, normalizeCodigoCaja } = require("./scanValidationService");
 
 /**
  * Actualiza el estado de la PO según el estado de sus cartones.
@@ -608,6 +608,325 @@ async function getResumenPO(po_id) {
   };
 }
 
+// --- Musicales por PO (SOP de musicales) ---
+// El operador escribe la PO y escanea las cajas de Producción: sus QRs quedan
+// en la PO y el sistema los reparte a los cartones musicales por SKU. A T4 se
+// le manda la PO con sus QRs por SKU, sin cartón, así que no importa en qué
+// cartón físico quedó cada par (Crocs lo aceptó). Si la caja trae más pares
+// de los que le faltan a la PO, se separan y se escanean QR por QR.
+
+async function resumenMusical(db, po_id) {
+  const { rows: poRows } = await db.query(
+    `SELECT id, po_number, estado, to_char(cfm_xf_date, 'YYYY-MM-DD') AS cfm_xf_date
+       FROM purchase_orders WHERE id = $1`,
+    [po_id],
+  );
+  const { rows: cartones } = await db.query(
+    `SELECT COUNT(*)::int AS total,
+            (COUNT(*) FILTER (WHERE estado = 'completo'))::int AS completos
+       FROM cartones WHERE po_id = $1 AND tipo = 'musical'`,
+    [po_id],
+  );
+  const { rows: skus } = await db.query(
+    `WITH mus AS (SELECT id FROM cartones WHERE po_id = $1 AND tipo = 'musical'),
+     ped AS (
+       SELECT cd.sku_id, SUM(cd.cantidad_por_carton)::int AS pedidos
+         FROM carton_detalles cd JOIN mus ON mus.id = cd.carton_id
+        GROUP BY cd.sku_id
+     ),
+     asi AS (
+       SELECT q.sku_id, COUNT(*)::int AS asignados
+         FROM escaneos e
+         JOIN mus ON mus.id = e.carton_id
+         JOIN codigos_qr q ON q.id = e.codigo_qr_id
+        GROUP BY q.sku_id
+     )
+     SELECT s.id AS sku_id, s.sku_number, s.size, s.style_name,
+            ped.pedidos, COALESCE(asi.asignados, 0) AS asignados
+       FROM ped
+       JOIN skus s ON s.id = ped.sku_id
+       LEFT JOIN asi ON asi.sku_id = ped.sku_id
+      ORDER BY s.sku_number`,
+    [po_id],
+  );
+  return {
+    po: poRows[0],
+    cartones_total: cartones[0].total,
+    cartones_completos: cartones[0].completos,
+    pedidos: skus.reduce((a, s) => a + s.pedidos, 0),
+    asignados: skus.reduce((a, s) => a + s.asignados, 0),
+    skus,
+  };
+}
+
+function validarPOMusical(po) {
+  if (po.estado === "enviado")
+    throw { status: 409, message: `La PO ${po.po_number} ya se envió a T4` };
+  if (po.estado === "cancelado")
+    throw { status: 409, message: `La PO ${po.po_number} está cancelada` };
+}
+
+async function buscarPOMusical(po_number) {
+  const numero = String(po_number || "").trim();
+  if (!numero) throw { status: 400, message: "Escribe el número de PO" };
+  const { rows } = await pool.query(
+    "SELECT id, po_number, estado FROM purchase_orders WHERE po_number = $1",
+    [numero],
+  );
+  if (!rows[0]) throw { status: 404, message: `No existe la PO ${numero}` };
+  validarPOMusical(rows[0]);
+  const resumen = await resumenMusical(pool, rows[0].id);
+  if (!resumen.cartones_total)
+    throw { status: 400, message: `La PO ${numero} no tiene cartones musicales` };
+  return resumen;
+}
+
+async function getResumenMusical(po_id) {
+  const resumen = await resumenMusical(pool, po_id);
+  if (!resumen.po) throw { status: 404, message: "PO no encontrada" };
+  return resumen;
+}
+
+// Bloquea la PO: dos estaciones con la misma PO no reparten a la vez.
+async function bloquearPOMusical(client, po_id) {
+  const { rows } = await client.query(
+    "SELECT id, po_number, estado FROM purchase_orders WHERE id = $1 FOR UPDATE",
+    [po_id],
+  );
+  if (!rows[0]) throw { status: 404, message: "PO no encontrada" };
+  validarPOMusical(rows[0]);
+  return rows[0];
+}
+
+// Cuántos pares de un SKU pide la PO en sus musicales y cuántos lleva.
+async function avanceSkuMusical(client, po_id, sku_id) {
+  const { rows } = await client.query(
+    `SELECT
+       (SELECT COALESCE(SUM(cd.cantidad_por_carton), 0)
+          FROM carton_detalles cd JOIN cartones c ON c.id = cd.carton_id
+         WHERE c.po_id = $1 AND c.tipo = 'musical' AND cd.sku_id = $2)::int AS pedidos,
+       (SELECT COUNT(*)
+          FROM escaneos e
+          JOIN cartones c ON c.id = e.carton_id
+          JOIN codigos_qr q ON q.id = e.codigo_qr_id
+         WHERE c.po_id = $1 AND c.tipo = 'musical' AND q.sku_id = $2)::int AS asignados`,
+    [po_id, sku_id],
+  );
+  return { ...rows[0], faltan: rows[0].pedidos - rows[0].asignados };
+}
+
+// Reparte los QRs (todos del mismo SKU) entre los cartones musicales de la PO
+// que aún tienen lugar para ese SKU, en orden de cartón.
+async function repartirEnMusicales(client, po_id, sku_id, qrIds, user_id) {
+  const { rows: huecos } = await client.query(
+    `SELECT c.id,
+            cd.cantidad_por_carton - (
+              SELECT COUNT(*) FROM escaneos e
+                JOIN codigos_qr q ON q.id = e.codigo_qr_id
+               WHERE e.carton_id = c.id AND q.sku_id = $2)::int AS hueco
+       FROM cartones c
+       JOIN carton_detalles cd ON cd.carton_id = c.id AND cd.sku_id = $2
+      WHERE c.po_id = $1 AND c.tipo = 'musical' AND c.estado <> 'completo'
+      ORDER BY c.carton_id
+        FOR UPDATE OF c`,
+    [po_id, sku_id],
+  );
+
+  const pendientes = [...qrIds];
+  const tocados = [];
+  for (const { id, hueco } of huecos) {
+    if (!pendientes.length) break;
+    if (hueco <= 0) continue;
+    const lote = pendientes.splice(0, hueco);
+    await client.query(
+      `INSERT INTO escaneos (carton_id, codigo_qr_id, created_by)
+       SELECT $1, unnest($2::int[]), $3`,
+      [id, lote, user_id],
+    );
+    tocados.push(id);
+  }
+  if (pendientes.length)
+    throw {
+      status: 409,
+      message: "Los cartones musicales de la PO ya no tienen lugar para este SKU",
+    };
+
+  const { rows: completados } = await client.query(
+    `UPDATE cartones c SET estado = 'completo'
+      WHERE c.id = ANY($1)
+        AND (SELECT COUNT(*) FROM escaneos e WHERE e.carton_id = c.id)
+            >= (SELECT SUM(cd.cantidad_por_carton) FROM carton_detalles cd WHERE cd.carton_id = c.id)
+      RETURNING c.id`,
+    [tocados],
+  );
+  await actualizarEstadoPO(client, tocados[0]);
+  return completados.length;
+}
+
+async function asignarCajaAPOMusical(po_id, codigo_caja, user_id) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const po = await bloquearPOMusical(client, po_id);
+
+    const { rows: cajaRows } = await client.query(
+      `SELECT ca.*, s.sku_number
+         FROM cajas ca JOIN skus s ON s.id = ca.sku_id
+        WHERE ca.codigo_caja = $1
+          FOR UPDATE OF ca`,
+      [normalizeCodigoCaja(codigo_caja)],
+    );
+    const caja = cajaRows[0];
+    if (!caja) throw { status: 404, message: "Caja no encontrada" };
+    if (caja.estado !== "empacada")
+      throw { status: 409, message: "La caja sigue abierta: ciérrala en Producción" };
+    if (caja.carton_id)
+      throw { status: 409, message: "La caja ya está completa en un cartón mono SKU" };
+
+    const avance = await avanceSkuMusical(client, po_id, caja.sku_id);
+    if (!avance.pedidos)
+      throw {
+        status: 400,
+        message: `La PO ${po.po_number} no lleva ${caja.sku_number} en sus musicales`,
+      };
+    if (avance.faltan <= 0)
+      throw {
+        status: 409,
+        message: `La PO ya tiene sus ${avance.pedidos} pares de ${caja.sku_number}`,
+      };
+
+    // Pares de la caja que no están en ningún cartón.
+    const { rows: disponibles } = await client.query(
+      `SELECT e.codigo_qr_id
+         FROM escaneos e
+        WHERE e.caja_id = $1
+          AND NOT EXISTS (
+            SELECT 1 FROM escaneos e2
+             WHERE e2.codigo_qr_id = e.codigo_qr_id AND e2.carton_id IS NOT NULL)
+        ORDER BY e.created_at DESC`,
+      [caja.id],
+    );
+    if (!disponibles.length)
+      throw {
+        status: 409,
+        message: "La caja ya no tiene pares disponibles: todos están en cartones",
+      };
+
+    // La caja trae más de lo que falta: se separan los pares y van QR por QR.
+    if (disponibles.length > avance.faltan) {
+      await client.query("ROLLBACK");
+      return {
+        requiere_qr: true,
+        sku_number: caja.sku_number,
+        faltan: avance.faltan,
+        disponibles: disponibles.length,
+        resumen: await resumenMusical(pool, po_id),
+      };
+    }
+
+    const qrIds = disponibles.map((d) => d.codigo_qr_id);
+    await assertQRsNoEnOtraPO(client, qrIds, po_id);
+    const completados = await repartirEnMusicales(client, po_id, caja.sku_id, qrIds, user_id);
+    const resumen = await resumenMusical(client, po_id);
+    await client.query("COMMIT");
+    return {
+      asignados: qrIds.length,
+      sku_number: caja.sku_number,
+      cartones_completados: completados,
+      resumen,
+    };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function asignarQRAPOMusical(po_id, codigo_qr, user_id) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const po = await bloquearPOMusical(client, po_id);
+
+    const { rows: qrRows } = await client.query(
+      `SELECT q.*, s.sku_number
+         FROM codigos_qr q LEFT JOIN skus s ON s.id = q.sku_id
+        WHERE q.codigo_qr = $1`,
+      [normalizeQR(String(codigo_qr).trim())],
+    );
+    const qr = qrRows[0];
+    if (!qr) throw { status: 404, message: "QR no encontrado" };
+    if (!qr.sku_id)
+      throw { status: 400, message: "El QR no tiene SKU: su UPC no está en el catálogo" };
+    if (qr.estado === "disponible")
+      throw { status: 409, message: "Este par no se escaneó en Producción" };
+    if (qr.estado === "enviado")
+      throw { status: 409, message: "Este QR ya se envió a T4" };
+
+    // La caja del par: bloqueada, para no competir con quien escanee la caja.
+    const { rows: cajaRows } = await client.query(
+      `SELECT ca.* FROM cajas ca
+        WHERE ca.id = (SELECT e.caja_id FROM escaneos e
+                        WHERE e.codigo_qr_id = $1 AND e.caja_id IS NOT NULL
+                        ORDER BY e.id LIMIT 1)
+          FOR UPDATE`,
+      [qr.id],
+    );
+    const caja = cajaRows[0];
+    if (!caja) throw { status: 409, message: "Este par no está en ninguna caja de Producción" };
+    if (caja.estado !== "empacada")
+      throw { status: 409, message: "La caja de este par sigue abierta en Producción" };
+    if (caja.carton_id)
+      throw { status: 409, message: "Este par está en una caja completa en un cartón mono SKU" };
+
+    const { rows: yaEn } = await client.query(
+      `SELECT po.id, po.po_number FROM escaneos e
+         JOIN cartones c ON c.id = e.carton_id
+         JOIN purchase_orders po ON po.id = c.po_id
+        WHERE e.codigo_qr_id = $1
+        LIMIT 1`,
+      [qr.id],
+    );
+    if (yaEn[0])
+      throw {
+        status: 409,
+        message:
+          yaEn[0].id === po.id
+            ? "Este par ya está en esta PO"
+            : `Este par ya está en la PO ${yaEn[0].po_number}`,
+      };
+
+    const avance = await avanceSkuMusical(client, po_id, qr.sku_id);
+    if (!avance.pedidos)
+      throw {
+        status: 400,
+        message: `La PO ${po.po_number} no lleva ${qr.sku_number} en sus musicales`,
+      };
+    if (avance.faltan <= 0)
+      throw {
+        status: 409,
+        message: `La PO ya tiene sus ${avance.pedidos} pares de ${qr.sku_number}`,
+      };
+
+    const completados = await repartirEnMusicales(client, po_id, qr.sku_id, [qr.id], user_id);
+    const resumen = await resumenMusical(client, po_id);
+    await client.query("COMMIT");
+    return {
+      asignados: 1,
+      sku_number: qr.sku_number,
+      faltan_sku: avance.faltan - 1,
+      cartones_completados: completados,
+      resumen,
+    };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
   asignarCajaACarton,
   reasociarQRaMusical,
@@ -617,4 +936,8 @@ module.exports = {
   buscarCarton,
   actualizarEstadoPO,
   getResumenPO,
+  buscarPOMusical,
+  getResumenMusical,
+  asignarCajaAPOMusical,
+  asignarQRAPOMusical,
 };

@@ -1,4 +1,73 @@
 const pool = require("../config/database");
+const { recalcularEstado } = require("./poImportService");
+
+// Quita los pares de una caja de los cartones donde estén (caja completa en un
+// cartón, camas, divisiones, QR por QR o musicales por PO) sin tocar su
+// escaneo de Producción: la caja sigue empacada y sus QRs, escaneados.
+async function quitarCajaDeCartones(client, caja) {
+  const { rows: cartones } = await client.query(
+    `SELECT c.id, c.po_id, po.po_number, po.estado AS po_estado
+       FROM cartones c
+       JOIN purchase_orders po ON po.id = c.po_id
+      WHERE c.id = $2
+         OR c.id IN (SELECT e.carton_id FROM escaneos e
+                      WHERE e.carton_id IS NOT NULL
+                        AND e.codigo_qr_id IN (SELECT codigo_qr_id FROM escaneos WHERE caja_id = $1))`,
+    [caja.id, caja.carton_id],
+  );
+  const enviada = cartones.find((c) => c.po_estado === "enviado");
+  if (enviada)
+    throw {
+      status: 409,
+      message: `Los pares de esta caja ya se enviaron a T4 en la PO ${enviada.po_number}: cancela el envío antes`,
+    };
+
+  const { rowCount: pares } = await client.query(
+    `DELETE FROM escaneos
+      WHERE carton_id IS NOT NULL
+        AND codigo_qr_id IN (SELECT codigo_qr_id FROM escaneos WHERE caja_id = $1)`,
+    [caja.id],
+  );
+  if (caja.carton_id)
+    await client.query("UPDATE cajas SET carton_id = NULL WHERE id = $1", [caja.id]);
+  await client.query(
+    "UPDATE cartones SET estado = 'pendiente' WHERE id = ANY($1)",
+    [cartones.map((c) => c.id)],
+  );
+  for (const po_id of new Set(cartones.map((c) => c.po_id)))
+    await recalcularEstado(client, po_id);
+
+  return {
+    pares_quitados_de_cartones: pares,
+    caja_desligada_de_carton: caja.carton_id ? "sí" : "no",
+    cartones_afectados: cartones.length,
+    pos: [...new Set(cartones.map((c) => c.po_number))].join(", ") || "—",
+  };
+}
+
+// Desasociar: la caja deja sus cartones y queda lista para volver a asignarse
+// (por ejemplo, si se va a abrir o corregir después de ligarla a una PO).
+async function desasociarCaja(caja_id) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      "SELECT * FROM cajas WHERE id = $1 FOR UPDATE",
+      [caja_id],
+    );
+    if (!rows[0]) throw { status: 404, message: "Caja no encontrada" };
+    const resultado = await quitarCajaDeCartones(client, rows[0]);
+    if (resultado.cartones_afectados === 0)
+      throw { status: 409, message: "La caja no está en ningún cartón" };
+    await client.query("COMMIT");
+    return { caja_id: parseInt(caja_id), ...resultado };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
 
 // Reset completo de una caja:
 // - Borra escaneos con caja_id
@@ -17,6 +86,10 @@ async function resetCaja(caja_id) {
     if (!cajaRows[0]) throw { status: 404, message: "Caja no encontrada" };
     const caja = cajaRows[0];
 
+    // Primero sale de los cartones donde estén sus pares (también los
+    // repartidos par por par o por PO), para no dejar QRs sueltos en cartones.
+    await quitarCajaDeCartones(client, caja);
+
     // Resetear QRs escaneados en esta caja a disponible
     await client.query(
       `UPDATE codigos_qr SET estado = 'disponible'
@@ -29,14 +102,6 @@ async function resetCaja(caja_id) {
       "DELETE FROM escaneos WHERE caja_id = $1",
       [caja_id],
     );
-
-    // Si la caja estaba en un cartón, resetear el cartón también
-    if (caja.carton_id) {
-      await client.query(
-        "UPDATE cartones SET estado = 'pendiente' WHERE id = $1",
-        [caja.carton_id],
-      );
-    }
 
     // Resetear la caja
     await client.query(
@@ -217,6 +282,14 @@ async function buscar(tipo, q = "") {
       `SELECT c.id, c.codigo_caja AS codigo, c.estado, c.cantidad_pares,
               s.sku_number,
               (SELECT COUNT(*) FROM escaneos e WHERE e.caja_id = c.id)::int AS escaneados,
+              (SELECT COUNT(*) FROM escaneos e2
+                WHERE e2.carton_id IS NOT NULL
+                  AND e2.codigo_qr_id IN (SELECT codigo_qr_id FROM escaneos e WHERE e.caja_id = c.id))::int AS pares_en_cartones,
+              (SELECT string_agg(DISTINCT po2.po_number, ', ')
+                 FROM escaneos e2
+                 JOIN cartones c2 ON c2.id = e2.carton_id
+                 JOIN purchase_orders po2 ON po2.id = c2.po_id
+                WHERE e2.codigo_qr_id IN (SELECT codigo_qr_id FROM escaneos e WHERE e.caja_id = c.id)) AS pos_por_par,
               ct.carton_id, po.po_number,
               to_char(c.created_at, 'YYYY-MM-DD HH24:MI') AS fecha
          FROM cajas c
@@ -261,4 +334,4 @@ async function buscar(tipo, q = "") {
   throw { status: 400, message: "Tipo de búsqueda no válido" };
 }
 
-module.exports = { resetCaja, resetCarton, resetPO, buscar };
+module.exports = { resetCaja, resetCarton, resetPO, buscar, desasociarCaja };

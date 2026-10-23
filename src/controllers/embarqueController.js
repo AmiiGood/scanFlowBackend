@@ -76,7 +76,34 @@ async function getResumenPO(req, res) {
   }
 }
 
+const responder = (fn) => async (req, res) => {
+  try {
+    res.json(await fn(req));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+};
+
+const buscarPOMusical = responder((req) =>
+  embarqueService.buscarPOMusical(req.query.po_number),
+);
+const getResumenMusical = responder((req) =>
+  embarqueService.getResumenMusical(req.params.po_id),
+);
+const asignarCajaAPOMusical = responder((req) => {
+  if (!req.body.codigo_caja) throw { status: 400, message: "codigo_caja requerido" };
+  return embarqueService.asignarCajaAPOMusical(req.params.po_id, req.body.codigo_caja, req.user.id);
+});
+const asignarQRAPOMusical = responder((req) => {
+  if (!req.body.codigo_qr) throw { status: 400, message: "codigo_qr requerido" };
+  return embarqueService.asignarQRAPOMusical(req.params.po_id, req.body.codigo_qr, req.user.id);
+});
+
 module.exports = {
+  buscarPOMusical,
+  getResumenMusical,
+  asignarCajaAPOMusical,
+  asignarQRAPOMusical,
   asignarCaja,
   reasociarQR,
   getCarton,
