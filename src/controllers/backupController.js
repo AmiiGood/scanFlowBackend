@@ -19,7 +19,9 @@ const SEED_USERS = [
   },
 ];
 
-const PASSWORD = "*FCMX2026";
+// La contraseña de los usuarios garantizados vive en el .env del servidor, no
+// en el código. Sin ella, el respaldo no los incluye (al restaurar se usan los
+// usuarios que vienen en los datos, o `npm run seed:admin`).
 const SALT_ROUNDS = 12;
 
 // Tablas en orden de inserción (respeta FK)
@@ -34,6 +36,7 @@ const TABLES_ORDERED = [
   "cajas",
   "escaneos",
   "liberaciones_caja",
+  "reseteos",
   "envios_trysor",
   "configuraciones",
   "import_jobs",
@@ -221,14 +224,19 @@ async function generate(req, res) {
     lines.push("-- =====================================================");
     lines.push("");
 
-    const passwordHash = await bcrypt.hash(PASSWORD, SALT_ROUNDS);
-
-    for (const u of SEED_USERS) {
-      lines.push(
-        `INSERT INTO users (nombre, email, password_hash, rol, activo)` +
-        ` VALUES ('${u.nombre}', '${u.email}', '${passwordHash}', '${u.rol}', TRUE)` +
-        ` ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, activo = TRUE;`,
-      );
+    const password = process.env.BACKUP_SEED_PASSWORD;
+    if (password) {
+      const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+      for (const u of SEED_USERS) {
+        lines.push(
+          `INSERT INTO users (nombre, email, password_hash, rol, activo)` +
+          ` VALUES ('${u.nombre}', '${u.email}', '${passwordHash}', '${u.rol}', TRUE)` +
+          ` ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, activo = TRUE;`,
+        );
+      }
+    } else {
+      lines.push("-- Sin usuarios garantizados: BACKUP_SEED_PASSWORD no está definida en el .env.");
+      lines.push("-- Al restaurar entran los usuarios que vienen en los datos; si no hay, corre `npm run seed:admin`.");
     }
 
     lines.push("");
