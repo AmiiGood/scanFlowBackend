@@ -1,6 +1,43 @@
 const pool = require("../config/database");
 const { recalcularEstado } = require("./poImportService");
 
+const MOTIVOS = {
+  escaneo_equivocado: "Escaneo equivocado (par o caja incorrectos)",
+  caja_corregida: "La caja se abre o se corrige",
+  carton_equivocado: "Cartón o PO equivocados",
+  etiqueta: "Error en la etiqueta",
+  prueba: "Prueba o capacitación",
+  otro: "Otro",
+};
+
+const TIPOS = {
+  caja: "Reset de caja",
+  carton: "Reset de cartón",
+  po: "Reset de PO",
+  desasociar_caja: "Desasociar caja",
+};
+
+// Cada reset queda registrado en la misma transacción: si el registro falla,
+// el reset no se hace.
+async function registrar(client, auditoria, tipo, objetivo_id, codigo, resultado) {
+  await client.query(
+    `INSERT INTO reseteos
+       (tipo, objetivo_id, codigo, supervisor_id, motivo, comentario, resultado, hecho_por)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [tipo, objetivo_id, codigo, auditoria.supervisor_id, auditoria.motivo,
+     auditoria.comentario, JSON.stringify(resultado), auditoria.user_id],
+  );
+}
+
+// Una PO enviada a T4 ya tiene sus QRs asociados allá: primero se cancela el envío.
+function bloquearSiEnviada(po) {
+  if (po?.estado === "enviado")
+    throw {
+      status: 409,
+      message: `La PO ${po.po_number} ya se envió a T4: cancela el envío antes de resetear`,
+    };
+}
+
 // Quita los pares de una caja de los cartones donde estén (caja completa en un
 // cartón, camas, divisiones, QR por QR o musicales por PO) sin tocar su
 // escaneo de Producción: la caja sigue empacada y sus QRs, escaneados.
@@ -47,7 +84,7 @@ async function quitarCajaDeCartones(client, caja) {
 
 // Desasociar: la caja deja sus cartones y queda lista para volver a asignarse
 // (por ejemplo, si se va a abrir o corregir después de ligarla a una PO).
-async function desasociarCaja(caja_id) {
+async function desasociarCaja(caja_id, auditoria) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -59,8 +96,10 @@ async function desasociarCaja(caja_id) {
     const resultado = await quitarCajaDeCartones(client, rows[0]);
     if (resultado.cartones_afectados === 0)
       throw { status: 409, message: "La caja no está en ningún cartón" };
+    const respuesta = { caja_id: parseInt(caja_id), ...resultado };
+    await registrar(client, auditoria, "desasociar_caja", rows[0].id, rows[0].codigo_caja, respuesta);
     await client.query("COMMIT");
-    return { caja_id: parseInt(caja_id), ...resultado };
+    return respuesta;
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
@@ -74,7 +113,7 @@ async function desasociarCaja(caja_id) {
 // - Resetea QRs a disponible
 // - Resetea caja a abierta
 // - Si estaba en un cartón, desliga la caja y resetea el cartón a pendiente
-async function resetCaja(caja_id) {
+async function resetCaja(caja_id, auditoria) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -109,8 +148,10 @@ async function resetCaja(caja_id) {
       [caja_id],
     );
 
+    const respuesta = { escaneos_borrados: rowCount, caja_id: parseInt(caja_id) };
+    await registrar(client, auditoria, "caja", caja.id, caja.codigo_caja, respuesta);
     await client.query("COMMIT");
-    return { escaneos_borrados: rowCount, caja_id: parseInt(caja_id) };
+    return respuesta;
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
@@ -124,16 +165,19 @@ async function resetCaja(caja_id) {
 // - Resetea QRs de esos escaneos a escaneado (vuelven a producción)
 // - Desliga todas las cajas del cartón y las resetea a empacada
 // - Resetea el cartón a pendiente
-async function resetCarton(carton_id) {
+async function resetCarton(carton_id, auditoria) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
     const { rows: cartonRows } = await client.query(
-      "SELECT * FROM cartones WHERE id = $1",
+      `SELECT c.*, po.po_number, po.estado AS po_estado
+         FROM cartones c JOIN purchase_orders po ON po.id = c.po_id
+        WHERE c.id = $1`,
       [carton_id],
     );
     if (!cartonRows[0]) throw { status: 404, message: "Cartón no encontrado" };
+    bloquearSiEnviada({ po_number: cartonRows[0].po_number, estado: cartonRows[0].po_estado });
 
     // Escaneos musicales (carton_id directo) → QRs vuelven a escaneado
     await client.query(
@@ -159,12 +203,17 @@ async function resetCarton(carton_id) {
       [carton_id],
     );
 
-    await client.query("COMMIT");
-    return {
+    // La PO deja de estar completa si lo estaba.
+    await recalcularEstado(client, cartonRows[0].po_id);
+
+    const respuesta = {
       carton_id: parseInt(carton_id),
       escaneos_musicales_borrados: musicalBorrados,
       cajas_desligadas: cajasBorradas,
     };
+    await registrar(client, auditoria, "carton", cartonRows[0].id, cartonRows[0].carton_id, respuesta);
+    await client.query("COMMIT");
+    return respuesta;
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
@@ -177,7 +226,7 @@ async function resetCarton(carton_id) {
 // - Reset de todos los cartones de la PO
 // - Reset de todas las cajas de esos cartones
 // - Resetea estado de la PO a pendiente
-async function resetPO(po_id) {
+async function resetPO(po_id, auditoria) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -187,6 +236,7 @@ async function resetPO(po_id) {
       [po_id],
     );
     if (!poRows[0]) throw { status: 404, message: "PO no encontrada" };
+    bloquearSiEnviada(poRows[0]);
 
     // Obtener todos los cartones de la PO
     const { rows: cartones } = await client.query(
@@ -253,14 +303,16 @@ async function resetPO(po_id) {
       [po_id],
     );
 
-    await client.query("COMMIT");
-    return {
+    const respuesta = {
       po_id: parseInt(po_id),
       cartones_reseteados: cartonIds.length,
       cajas_desligadas: cajasDesligadas,
       escaneos_musicales_borrados: escaneosMusicales,
       escaneos_cajas_borrados: escaneosCajas,
     };
+    await registrar(client, auditoria, "po", poRows[0].id, poRows[0].po_number, respuesta);
+    await client.query("COMMIT");
+    return respuesta;
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
@@ -334,4 +386,63 @@ async function buscar(tipo, q = "") {
   throw { status: 400, message: "Tipo de búsqueda no válido" };
 }
 
-module.exports = { resetCaja, resetCarton, resetPO, buscar, desasociarCaja };
+// Reporte de reseteos (Reportes › Reseteos).
+async function reporteReseteos(params = {}) {
+  const { fecha_desde = "", fecha_hasta = "", tipo = "", page = 1, limit = 50, all = "0" } = params;
+  const conditions = [];
+  const qp = [];
+  if (fecha_desde) {
+    qp.push(fecha_desde);
+    conditions.push(`r.created_at >= $${qp.length}::date`);
+  }
+  if (fecha_hasta) {
+    qp.push(fecha_hasta);
+    conditions.push(`r.created_at < $${qp.length}::date + 1`);
+  }
+  if (TIPOS[tipo]) {
+    qp.push(tipo);
+    conditions.push(`r.tipo = $${qp.length}`);
+  }
+  const where = conditions.length ? "WHERE " + conditions.join(" AND ") : "";
+  const select = `
+    SELECT r.id, to_char(r.created_at, 'YYYY-MM-DD HH24:MI:SS') AS fecha_hora,
+           r.tipo, r.codigo, r.motivo, r.comentario, r.resultado,
+           s.nombre AS supervisor, u.nombre AS hecho_por, u.rol AS hecho_por_rol
+      FROM reseteos r
+      LEFT JOIN supervisores s ON s.id = r.supervisor_id
+      LEFT JOIN users u ON u.id = r.hecho_por
+      ${where}
+     ORDER BY r.created_at DESC, r.id DESC`;
+  const conTexto = (rows) =>
+    rows.map((r) => ({
+      ...r,
+      tipo_texto: TIPOS[r.tipo] || r.tipo,
+      motivo_texto: MOTIVOS[r.motivo] || r.motivo,
+    }));
+
+  if (String(all) === "1") {
+    const { rows } = await pool.query(select, qp);
+    return { data: conTexto(rows), total: rows.length, page: 1, pages: 1 };
+  }
+  const { rows: tot } = await pool.query(`SELECT COUNT(*)::int AS n FROM reseteos r ${where}`, qp);
+  const lim = parseInt(limit) || 50;
+  const pagina = parseInt(page) || 1;
+  qp.push(lim, (pagina - 1) * lim);
+  const { rows } = await pool.query(`${select} LIMIT $${qp.length - 1} OFFSET $${qp.length}`, qp);
+  return {
+    data: conTexto(rows),
+    total: tot[0].n,
+    page: pagina,
+    pages: Math.max(1, Math.ceil(tot[0].n / lim)),
+  };
+}
+
+module.exports = {
+  MOTIVOS,
+  resetCaja,
+  resetCarton,
+  resetPO,
+  buscar,
+  desasociarCaja,
+  reporteReseteos,
+};

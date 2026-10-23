@@ -148,3 +148,17 @@ CREATE TABLE liberaciones_caja (
 );
 
 CREATE INDEX idx_liberaciones_caja_created_at ON liberaciones_caja (created_at);
+
+CREATE TABLE reseteos (
+  id SERIAL PRIMARY KEY,
+  tipo VARCHAR(20) NOT NULL CHECK (tipo IN ('caja', 'carton', 'po', 'desasociar_caja')),
+  objetivo_id INTEGER,
+  codigo VARCHAR(255) NOT NULL,
+  supervisor_id INTEGER REFERENCES supervisores(id),
+  motivo VARCHAR(30) NOT NULL,
+  comentario TEXT,
+  resultado JSONB,
+  hecho_por INTEGER REFERENCES users(id),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_reseteos_created_at ON reseteos (created_at);

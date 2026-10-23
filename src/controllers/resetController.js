@@ -1,47 +1,51 @@
 const resetService = require("../services/resetService");
+const supervisorService = require("../services/supervisorService");
 
-async function resetCaja(req, res) {
+// Todo reset lleva motivo. El superadmin no necesita gafete; los demás roles
+// (Consulta de reportes) necesitan el de un supervisor activo.
+async function autorizar(req) {
+  const { codigo, motivo } = req.body || {};
+  const comentario = String(req.body?.comentario || "").trim().slice(0, 500);
+  if (!resetService.MOTIVOS[motivo])
+    throw { status: 400, message: "Elige el motivo del reset" };
+  if (motivo === "otro" && !comentario)
+    throw { status: 400, message: "Describe el motivo del reset" };
+
+  let supervisor = null;
+  if (req.user.rol !== "superadmin") {
+    if (!codigo) throw { status: 400, message: "Falta el gafete del supervisor" };
+    supervisor = await supervisorService.verificar(codigo);
+  }
+  return {
+    motivo,
+    comentario: comentario || null,
+    supervisor_id: supervisor?.id || null,
+    supervisor: supervisor?.nombre || null,
+    user_id: req.user.id,
+  };
+}
+
+const responder = (fn) => async (req, res) => {
   try {
-    const result = await resetService.resetCaja(req.params.id);
-    res.json(result);
+    res.json(await fn(req));
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
   }
-}
+};
 
-async function resetCarton(req, res) {
-  try {
-    const result = await resetService.resetCarton(req.params.id);
-    res.json(result);
-  } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
-  }
-}
-
-async function resetPO(req, res) {
-  try {
-    const result = await resetService.resetPO(req.params.id);
-    res.json(result);
-  } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
-  }
-}
-
-async function buscar(req, res) {
-  try {
-    res.json(await resetService.buscar(req.query.tipo, req.query.q));
-  } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
-  }
-}
-
-async function desasociarCaja(req, res) {
-  try {
-    res.json(await resetService.desasociarCaja(req.params.id));
-  } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
-  }
-}
+const conAutorizacion = (accion) =>
+  responder(async (req) => {
+    const auditoria = await autorizar(req);
+    const resultado = await accion(req.params.id, auditoria);
+    return auditoria.supervisor ? { ...resultado, autorizo: auditoria.supervisor } : resultado;
+  });
 
 module.exports = {
-  desasociarCaja, resetCaja, resetCarton, resetPO, buscar };
+  resetCaja: conAutorizacion(resetService.resetCaja),
+  resetCarton: conAutorizacion(resetService.resetCarton),
+  resetPO: conAutorizacion(resetService.resetPO),
+  desasociarCaja: conAutorizacion(resetService.desasociarCaja),
+  buscar: responder((req) => resetService.buscar(req.query.tipo, req.query.q)),
+  motivos: responder(async () => resetService.MOTIVOS),
+  reporteReseteos: responder((req) => resetService.reporteReseteos(req.query)),
+};

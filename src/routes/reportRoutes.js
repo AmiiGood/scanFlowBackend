@@ -3,6 +3,7 @@ const authenticate = require("../middleware/authenticate");
 const authorize = require("../middleware/authorize");
 const r = require("../controllers/reportController");
 const supervisorController = require("../controllers/supervisorController");
+const resetController = require("../controllers/resetController");
 
 // "reportes" es un rol de solo consulta: reportes y dashboard, nada más.
 const admin = authorize("superadmin", "operador_po", "reportes");
@@ -32,6 +33,7 @@ router.get(
   admin,
   supervisorController.reporteLiberaciones,
 );
+router.get("/reseteos", authenticate, admin, resetController.reporteReseteos);
 router.get("/envios-t4", authenticate, admin, r.historialEnviosT4);
 router.get("/trazabilidad/:codigo", authenticate, admin, r.trazabilidadQR);
 router.get("/po/:po_id/progreso", authenticate, adminEmbarque, r.progresoPorPO);
