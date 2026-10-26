@@ -1,9 +1,9 @@
 const router = require("express").Router();
 const authenticate = require("../middleware/authenticate");
-const authorize = require("../middleware/authorize");
+const permiso = require("../middleware/permiso");
 const userController = require("../controllers/userController");
 
-router.use(authenticate, authorize("superadmin"));
+router.use(authenticate, permiso("usuarios.administrar"));
 
 router.get("/", userController.getAll);
 router.get("/:id", userController.getOne);

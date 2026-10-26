@@ -1,32 +1,32 @@
 const router = require("express").Router();
 const authenticate = require("../middleware/authenticate");
-const authorize = require("../middleware/authorize");
+const permiso = require("../middleware/permiso");
 const qrController = require("../controllers/qrController");
 
 router.get("/stats", authenticate, qrController.getStats);
 router.get(
   "/jobs",
   authenticate,
-  authorize("superadmin"),
+  permiso("qrs.importar"),
   qrController.getRecentJobs,
 );
 router.get(
   "/jobs/:job_id",
   authenticate,
-  authorize("superadmin"),
+  permiso("qrs.importar"),
   qrController.getJobStatus,
 );
 router.get("/:codigo", authenticate, qrController.getOne);
 router.post(
   "/import",
   authenticate,
-  authorize("superadmin"),
+  permiso("qrs.importar"),
   qrController.importQRs,
 );
 router.post(
   "/match-skus",
   authenticate,
-  authorize("superadmin"),
+  permiso("qrs.importar"),
   qrController.matchQRsWithSkus,
 );
 

@@ -1,6 +1,6 @@
 const router = require("express").Router();
 const authenticate = require("../middleware/authenticate");
-const authorize = require("../middleware/authorize");
+const permiso = require("../middleware/permiso");
 const upload = require("../middleware/upload");
 const poController = require("../controllers/poController");
 
@@ -9,7 +9,7 @@ router.get("/:id", authenticate, poController.getOne);
 router.post(
   "/import",
   authenticate,
-  authorize("superadmin", "operador_po"),
+  permiso("pos.importar"),
   upload.single("file"),
   poController.importPOs,
 );

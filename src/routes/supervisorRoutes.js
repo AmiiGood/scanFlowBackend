@@ -1,20 +1,23 @@
 const router = require("express").Router();
 const authenticate = require("../middleware/authenticate");
-const authorize = require("../middleware/authorize");
+const permiso = require("../middleware/permiso");
 const s = require("../controllers/supervisorController");
 
-const produccion = authorize("operador_produccion", "superadmin");
-const conGafete = authorize("operador_produccion", "superadmin", "reportes");
-const soloAdmin = authorize("superadmin");
+const administrar = permiso("supervisores.administrar");
 
-// Producción: validar el gafete y conocer los motivos antes de liberar una caja.
-router.post("/verificar", authenticate, conGafete, s.verificar);
-router.get("/motivos", authenticate, produccion, s.motivos);
+// Validar un gafete: al liberar una caja en Producción o al resetear.
+router.post(
+  "/verificar",
+  authenticate,
+  permiso("produccion.escanear", "reset.caja", "reset.desasociar", "reset.carton", "reset.po"),
+  s.verificar,
+);
+router.get("/motivos", authenticate, permiso("produccion.escanear"), s.motivos);
 
 // Administración de supervisores y sus gafetes.
-router.get("/", authenticate, soloAdmin, s.listar);
-router.post("/", authenticate, soloAdmin, s.crear);
-router.patch("/:id", authenticate, soloAdmin, s.actualizar);
-router.post("/:id/regenerar", authenticate, soloAdmin, s.regenerar);
+router.get("/", authenticate, administrar, s.listar);
+router.post("/", authenticate, administrar, s.crear);
+router.patch("/:id", authenticate, administrar, s.actualizar);
+router.post("/:id/regenerar", authenticate, administrar, s.regenerar);
 
 module.exports = router;

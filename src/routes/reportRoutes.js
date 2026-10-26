@@ -1,23 +1,27 @@
 const router = require("express").Router();
 const authenticate = require("../middleware/authenticate");
-const authorize = require("../middleware/authorize");
+const permiso = require("../middleware/permiso");
 const r = require("../controllers/reportController");
 const supervisorController = require("../controllers/supervisorController");
 const resetController = require("../controllers/resetController");
 
-// "reportes" es un rol de solo consulta: reportes y dashboard, nada más.
-const admin = authorize("superadmin", "operador_po", "reportes");
-const adminEmbarque = authorize(
-  "superadmin",
-  "operador_embarque",
-  "operador_po",
-  "reportes",
-);
+// Pedir todo el reporte (all=1) es exportar a Excel. Va después de
+// authenticate, dentro de cada cadena.
+function exportar(req, res, next) {
+  if (String(req.query.all) === "1" && !req.user.permisos.has("reportes.exportar"))
+    return res.status(403).json({ error: "No tienes permiso para exportar reportes" });
+  next();
+}
 
-router.get("/resumen", authenticate, admin, r.resumenGeneral);
-router.get("/dashboard", authenticate, admin, r.dashboard);
-router.get("/actividad", authenticate, admin, r.actividadReciente);
-router.get("/operadores", authenticate, admin, r.produccionPorOperador);
+const admin = [permiso("reportes.ver"), exportar];
+const tablero = [permiso("dashboard.ver", "reportes.ver"), exportar];
+// El avance de una PO lo usan también su detalle y Embarque.
+const adminEmbarque = [permiso("reportes.ver", "pos.ver", "embarque.escanear", "embarque.musical_po"), exportar];
+
+router.get("/resumen", authenticate, tablero, r.resumenGeneral);
+router.get("/dashboard", authenticate, permiso("dashboard.ver"), exportar, r.dashboard);
+router.get("/actividad", authenticate, tablero, r.actividadReciente);
+router.get("/operadores", authenticate, tablero, r.produccionPorOperador);
 router.get("/skus-sin-qr", authenticate, admin, r.skusSinQRs);
 router.get("/produccion-dia", authenticate, admin, r.produccionPorDia);
 router.get("/cajas-sku", authenticate, admin, r.cajasPorSKU);

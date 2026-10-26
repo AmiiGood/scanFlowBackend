@@ -2,6 +2,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const pool = require("../config/database");
+const permisosService = require("./permisosService");
 
 const SALT_ROUNDS = 12;
 
@@ -37,12 +38,7 @@ async function login(email, password) {
   return {
     accessToken,
     refreshToken,
-    user: {
-      id: user.id,
-      nombre: user.nombre,
-      email: user.email,
-      rol: user.rol,
-    },
+    user: await permisosService.sesion(user),
   };
 }
 

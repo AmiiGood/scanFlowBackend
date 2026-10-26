@@ -1,6 +1,6 @@
 const router = require("express").Router();
 const authenticate = require("../middleware/authenticate");
-const authorize = require("../middleware/authorize");
+const permiso = require("../middleware/permiso");
 const upload = require("../middleware/upload");
 const skuController = require("../controllers/skuController");
 
@@ -9,7 +9,7 @@ router.get("/:id", authenticate, skuController.getOne);
 router.post(
   "/import",
   authenticate,
-  authorize("superadmin"),
+  permiso("skus.administrar"),
   upload.single("file"),
   skuController.importSkus,
 );

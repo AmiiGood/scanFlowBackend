@@ -15,6 +15,7 @@ app.use(cookieParser());
 
 app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/users", require("./routes/userRoutes"));
+app.use("/api/perfiles", require("./routes/perfilRoutes"));
 app.use("/api/skus", require("./routes/skuRoutes"));
 app.use("/api/purchase-orders", require("./routes/poRoutes"));
 app.use("/api/qr", require("./routes/qrRoutes"));

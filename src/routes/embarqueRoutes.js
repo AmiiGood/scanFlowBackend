@@ -1,52 +1,24 @@
 const router = require("express").Router();
 const authenticate = require("../middleware/authenticate");
-const authorize = require("../middleware/authorize");
+const permiso = require("../middleware/permiso");
 const embarqueController = require("../controllers/embarqueController");
 
-const soloEmbarque = authorize("operador_embarque", "superadmin");
+const porCarton = permiso("embarque.escanear");
+const musical = permiso("embarque.musical_po");
+const cualquiera = permiso("embarque.escanear", "embarque.musical_po");
 
 // Musicales por PO: se escribe la PO y se escanean las cajas (o QR por QR).
-router.get("/musical/po", authenticate, soloEmbarque, embarqueController.buscarPOMusical);
-router.get("/musical/po/:po_id", authenticate, soloEmbarque, embarqueController.getResumenMusical);
-router.post("/musical/po/:po_id/caja", authenticate, soloEmbarque, embarqueController.asignarCajaAPOMusical);
-router.post("/musical/po/:po_id/qr", authenticate, soloEmbarque, embarqueController.asignarQRAPOMusical);
+router.get("/musical/po", authenticate, musical, embarqueController.buscarPOMusical);
+router.get("/musical/po/:po_id", authenticate, musical, embarqueController.getResumenMusical);
+router.post("/musical/po/:po_id/caja", authenticate, musical, embarqueController.asignarCajaAPOMusical);
+router.post("/musical/po/:po_id/qr", authenticate, musical, embarqueController.asignarQRAPOMusical);
 
-router.get(
-  "/po/:po_id",
-  authenticate,
-  soloEmbarque,
-  embarqueController.getCartonesPorPO,
-);
-router.get(
-  "/po/:po_id/resumen",
-  authenticate,
-  soloEmbarque,
-  embarqueController.getResumenPO,
-);
-router.get(
-  "/buscar/:codigo",
-  authenticate,
-  soloEmbarque,
-  embarqueController.buscarCarton,
-);
-router.get("/:id", authenticate, soloEmbarque, embarqueController.getCarton);
-router.get(
-  "/:id/progreso-musical",
-  authenticate,
-  soloEmbarque,
-  embarqueController.getProgresoMusical,
-);
-router.post(
-  "/:id/asignar-caja",
-  authenticate,
-  soloEmbarque,
-  embarqueController.asignarCaja,
-);
-router.post(
-  "/:id/reasociar-qr",
-  authenticate,
-  soloEmbarque,
-  embarqueController.reasociarQR,
-);
+router.get("/po/:po_id", authenticate, cualquiera, embarqueController.getCartonesPorPO);
+router.get("/po/:po_id/resumen", authenticate, cualquiera, embarqueController.getResumenPO);
+router.get("/buscar/:codigo", authenticate, porCarton, embarqueController.buscarCarton);
+router.get("/:id", authenticate, porCarton, embarqueController.getCarton);
+router.get("/:id/progreso-musical", authenticate, porCarton, embarqueController.getProgresoMusical);
+router.post("/:id/asignar-caja", authenticate, porCarton, embarqueController.asignarCaja);
+router.post("/:id/reasociar-qr", authenticate, porCarton, embarqueController.reasociarQR);
 
 module.exports = router;

@@ -1,4 +1,5 @@
 const authService = require("../services/authService");
+const permisosService = require("../services/permisosService");
 
 const COOKIE_OPTS = {
   httpOnly: true,
@@ -45,4 +46,12 @@ async function logout(req, res) {
   }
 }
 
-module.exports = { login, refresh, logout };
+async function me(req, res) {
+  try {
+    res.json(await permisosService.sesion(req.user));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+}
+
+module.exports = { login, refresh, logout, me };

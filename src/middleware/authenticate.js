@@ -1,15 +1,27 @@
 const jwt = require("jsonwebtoken");
+const permisosService = require("../services/permisosService");
 
-module.exports = (req, res, next) => {
+// Valida el token y carga los permisos vigentes del usuario (su perfil). Así
+// un cambio de perfil o una baja aplican sin esperar a que venza el token.
+module.exports = async (req, res, next) => {
   const auth = req.headers.authorization;
   if (!auth?.startsWith("Bearer "))
     return res.status(401).json({ error: "Token requerido" });
 
-  const token = auth.split(" ")[1];
+  let payload;
   try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET);
-    next();
+    payload = jwt.verify(auth.split(" ")[1], process.env.JWT_SECRET);
   } catch {
-    res.status(401).json({ error: "Token inválido o expirado" });
+    return res.status(401).json({ error: "Token inválido o expirado" });
+  }
+
+  try {
+    const info = await permisosService.deUsuario(payload.id);
+    if (!info || !info.activo)
+      return res.status(401).json({ error: "Usuario desactivado" });
+    req.user = { ...payload, rol: info.rol, perfil: info.perfil, permisos: info.permisos };
+    next();
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 };

@@ -1,10 +1,8 @@
 const router = require("express").Router();
 const authenticate = require("../middleware/authenticate");
-const authorize = require("../middleware/authorize");
+const permiso = require("../middleware/permiso");
 const backupController = require("../controllers/backupController");
 
-const soloAdmin = authorize("superadmin");
-
-router.post("/generate", authenticate, soloAdmin, backupController.generate);
+router.post("/generate", authenticate, permiso("backup.generar"), backupController.generate);
 
 module.exports = router;

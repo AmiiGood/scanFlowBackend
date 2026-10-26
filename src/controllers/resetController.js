@@ -1,8 +1,8 @@
 const resetService = require("../services/resetService");
 const supervisorService = require("../services/supervisorService");
 
-// Todo reset lleva motivo. El superadmin no necesita gafete; los demás roles
-// (Consulta de reportes) necesitan el de un supervisor activo.
+// Todo reset lleva motivo. Quien no tenga el permiso "reset.sin_gafete" necesita
+// además el gafete de un supervisor activo.
 async function autorizar(req) {
   const { codigo, motivo } = req.body || {};
   const comentario = String(req.body?.comentario || "").trim().slice(0, 500);
@@ -12,7 +12,7 @@ async function autorizar(req) {
     throw { status: 400, message: "Describe el motivo del reset" };
 
   let supervisor = null;
-  if (req.user.rol !== "superadmin") {
+  if (!req.user.permisos.has("reset.sin_gafete")) {
     if (!codigo) throw { status: 400, message: "Falta el gafete del supervisor" };
     supervisor = await supervisorService.verificar(codigo);
   }

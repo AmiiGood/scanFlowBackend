@@ -1,42 +1,18 @@
 const router = require("express").Router();
 const authenticate = require("../middleware/authenticate");
-const authorize = require("../middleware/authorize");
+const permiso = require("../middleware/permiso");
 const cajaController = require("../controllers/cajaController");
 const supervisorController = require("../controllers/supervisorController");
 
-const soloProduccion = authorize("operador_produccion", "superadmin");
+const produccion = permiso("produccion.escanear");
+// Embarque también consulta cajas (por su etiqueta) para asignarlas.
+const consultar = permiso("produccion.escanear", "embarque.escanear", "embarque.musical_po");
 
-router.get(
-  "/",
-  authenticate,
-  authorize("operador_produccion", "operador_embarque", "superadmin"),
-  cajaController.getCajas,
-);
-router.get(
-  "/buscar/:codigo",
-  authenticate,
-  authorize("operador_produccion", "operador_embarque", "superadmin"),
-  cajaController.buscarCaja,
-);
-router.post("/", authenticate, soloProduccion, cajaController.iniciarCaja);
-router.get(
-  "/:id",
-  authenticate,
-  authorize("operador_produccion", "operador_embarque", "superadmin"),
-  cajaController.getProgreso,
-);
-router.post(
-  "/:id/scan",
-  authenticate,
-  soloProduccion,
-  cajaController.escanearQR,
-);
-// Un supervisor libera la pantalla de una caja que no se puede completar.
-router.post(
-  "/:id/liberar",
-  authenticate,
-  soloProduccion,
-  supervisorController.liberarCaja,
-);
+router.get("/", authenticate, consultar, cajaController.getCajas);
+router.get("/buscar/:codigo", authenticate, consultar, cajaController.buscarCaja);
+router.post("/", authenticate, produccion, cajaController.iniciarCaja);
+router.get("/:id", authenticate, consultar, cajaController.getProgreso);
+router.post("/:id/scan", authenticate, produccion, cajaController.escanearQR);
+router.post("/:id/liberar", authenticate, produccion, supervisorController.liberarCaja);
 
 module.exports = router;
