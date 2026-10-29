@@ -659,7 +659,8 @@ async function posParaReportes({ filtro = "", search = "" } = {}) {
 // y, si ya se embarcó, el cartón y la PO. El cartón sale de la caja (modo
 // directo) o del escaneo de Embarque del mismo QR (musical, parcial o caja
 // dividida).
-async function detalleCajasQR(params = {}) {
+// soloConsulta: devuelve la consulta completa (para el Excel por cursor).
+async function detalleCajasQR(params = {}, { soloConsulta = false } = {}) {
   const {
     codigo = "",
     sku = "",
@@ -717,6 +718,7 @@ async function detalleCajasQR(params = {}) {
     ${from}
     ORDER BY e.created_at, e.id`;
 
+  if (soloConsulta) return { sql: select, params: qp };
   if (String(all) === "1") {
     const { rows } = await pool.query(select, qp);
     return { data: rows, total: rows.length, page: 1, pages: 1 };
@@ -746,7 +748,7 @@ async function detalleCajasQR(params = {}) {
 // Una fila por QR ya usado (escaneado o enviado) con todo su recorrido: SKU,
 // caja de Producción, cartón, PO y envío a T4. La fecha es la del escaneo de
 // Producción o, si el par entró directo a un cartón, la del escaneo de Embarque.
-async function detalleQRs(params = {}) {
+async function detalleQRs(params = {}, { soloConsulta = false } = {}) {
   const {
     codigo = "",
     sku = "",
@@ -840,6 +842,7 @@ async function detalleQRs(params = {}) {
     ${from}
     ORDER BY ${fecha} NULLS LAST, q.id`;
 
+  if (soloConsulta) return { sql: select, params: qp };
   if (String(all) === "1") {
     const { rows } = await pool.query(select, qp);
     return { data: rows, total: rows.length, page: 1, pages: 1 };

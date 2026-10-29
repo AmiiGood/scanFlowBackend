@@ -30,6 +30,8 @@ router.get("/qrs-sin-sku/upcs", authenticate, admin, r.qrsSinSKUPorUPC);
 router.get("/pos", authenticate, admin, r.posParaReportes);
 router.get("/detalle-cajas", authenticate, admin, r.detalleCajasQR);
 router.get("/detalle-qrs", authenticate, admin, r.detalleQRs);
+router.get("/detalle-cajas/excel", authenticate, permiso("reportes.ver"), permiso("reportes.exportar"), r.detalleCajasQRExcel);
+router.get("/detalle-qrs/excel", authenticate, permiso("reportes.ver"), permiso("reportes.exportar"), r.detalleQRsExcel);
 router.get("/usuarios", authenticate, admin, r.usuariosReporte);
 router.get(
   "/liberaciones",
