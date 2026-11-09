@@ -4,8 +4,10 @@ const pool = require("../config/database");
 // puede traer una letra de prefijo en reimpresiones (ej. "R2068").
 const CAJA_RE = /^\d+\$[A-Z0-9-]+\$\d+\$[A-Z]?\d+$/;
 
+// El guion del SKU llega como ' o { con la PC en español, y como / con el lector
+// configurado en español y la PC en inglés.
 function normalizeCodigoCaja(codigo) {
-  return String(codigo).replace(/['{]/g, "-").trim().toUpperCase();
+  return String(codigo).replace(/['{/]/g, "-").trim().toUpperCase();
 }
 
 function parseCodgoCaja(codigo) {
@@ -44,7 +46,7 @@ function parseCodgoCaja(codigo) {
 }
 
 function normalizeSku(sku) {
-  return sku.replace(/['{]/g, "-").toUpperCase();
+  return sku.replace(/['{/]/g, "-").toUpperCase();
 }
 
 function swapCase(str) {
@@ -53,7 +55,22 @@ function swapCase(str) {
   );
 }
 
+// El lector "teclea" el QR con la distribución de teclado activa en la PC, así
+// que el mismo código llega distinto según el idioma y el Bloq Mayús:
+//   https://scan.crocs.com/Q/W7SAKYGBDI8O   PC en inglés
+//   httpsÑ--scan.crocs.com-Q-W7SAKYGBDI8O   PC en español
+//   https>&&scan.crocs.com&Q&W7SAKYGBDI8O   lector en español, PC en inglés
+//   HTTPS://SCAN.CROCS.COM/q/w7sakygbdi8o   con Bloq Mayús
+// Lo que no cambia son las letras y los números (dominio y token), así que con
+// ellos se rearma la dirección como la manda Trysor: el token siempre va en
+// mayúsculas. "NewQ" es la ruta a la que redirige la página al abrirlo con el
+// celular; el código es el mismo.
+const QR_CROCS = /(scan|verify)[^a-z0-9]crocs[^a-z0-9]com[^a-z0-9]+(?:new)?q[^a-z0-9]+([a-z0-9]+)\s*$/i;
+
 function normalizeQR(codigo) {
+  const crocs = String(codigo).trim().match(QR_CROCS);
+  if (crocs) return `https://${crocs[1].toLowerCase()}.crocs.com/Q/${crocs[2].toUpperCase()}`;
+
   // Escáneres con teclado en español mapean `:` → `Ñ/ñ` y `/` → `-`
   // Detectar si parece URL mal codificada (con o sin Caps Lock)
   if (/^https?[Ññ]/i.test(codigo) || /^https?-/i.test(codigo)) {
