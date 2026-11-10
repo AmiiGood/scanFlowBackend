@@ -2,3 +2,8 @@
 node_modules
 # Respuestas crudas de Trysor (scripts/verificar_upc_trysor.js)
 scripts/respuesta_trysor_*.txt
+
+# Arranque automático en Windows (los genera deploy/windows/instalar.ps1 en cada equipo)
+logs/
+deploy/windows/node-dir.txt
+deploy/windows/instalacion.json
