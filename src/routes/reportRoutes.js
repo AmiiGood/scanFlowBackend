@@ -4,6 +4,7 @@ const permiso = require("../middleware/permiso");
 const r = require("../controllers/reportController");
 const supervisorController = require("../controllers/supervisorController");
 const resetController = require("../controllers/resetController");
+const consolidacionController = require("../controllers/consolidacionController");
 
 // Pedir todo el reporte (all=1) es exportar a Excel. Va después de
 // authenticate, dentro de cada cadena.
@@ -40,6 +41,7 @@ router.get(
   supervisorController.reporteLiberaciones,
 );
 router.get("/reseteos", authenticate, admin, resetController.reporteReseteos);
+router.get("/consolidaciones", authenticate, admin, consolidacionController.reporte);
 router.get("/envios-t4", authenticate, admin, r.historialEnviosT4);
 router.get("/trazabilidad/:codigo", authenticate, admin, r.trazabilidadQR);
 router.get("/po/:po_id/progreso", authenticate, adminEmbarque, r.progresoPorPO);

@@ -82,6 +82,62 @@ async function quitarCajaDeCartones(client, caja) {
   };
 }
 
+// Cajas (de entre las dadas) que participaron en una consolidación, como
+// origen o como destino. Si la migración aún no se corre, ninguna.
+async function cajasConsolidadas(db, ids) {
+  try {
+    const { rows } = await db.query(
+      `SELECT caja_origen_id AS id FROM consolidaciones WHERE caja_origen_id = ANY($1)
+       UNION
+       SELECT caja_destino_id FROM consolidaciones WHERE caja_destino_id = ANY($1)`,
+      [ids],
+    );
+    return new Set(rows.map((r) => r.id));
+  } catch (err) {
+    if (err.code === "42P01") return new Set(); // 42P01: la tabla no existe
+    throw err;
+  }
+}
+
+// Una caja se resetea solo si ninguno de sus pares está en una PO (primero se
+// desasocia, a propósito) y si no participó en una consolidación: tiene pares
+// que vinieron de otras cajas o se fueron a otra, y el reset los regresaría a
+// disponibles. Un error al consolidar se corrige consolidando de regreso.
+async function asegurarReseteable(client, caja) {
+  if ((await cajasConsolidadas(client, [caja.id])).has(caja.id))
+    throw {
+      status: 409,
+      message: "Esta caja tiene pares consolidados, no se puede resetear. Si un par quedó mal, consolídalo de regreso",
+    };
+
+  if (caja.carton_id) {
+    const { rows } = await client.query(
+      `SELECT c.carton_id, po.po_number
+         FROM cartones c JOIN purchase_orders po ON po.id = c.po_id
+        WHERE c.id = $1`,
+      [caja.carton_id],
+    );
+    throw {
+      status: 409,
+      message: `La caja está completa en el cartón ${rows[0]?.carton_id} de la PO ${rows[0]?.po_number}. Primero desasóciala`,
+    };
+  }
+
+  const { rows } = await client.query(
+    `SELECT COUNT(*)::int AS pares, string_agg(DISTINCT po.po_number, ', ') AS pos
+       FROM escaneos e2
+       JOIN cartones c ON c.id = e2.carton_id
+       JOIN purchase_orders po ON po.id = c.po_id
+      WHERE e2.codigo_qr_id IN (SELECT codigo_qr_id FROM escaneos WHERE caja_id = $1)`,
+    [caja.id],
+  );
+  if (rows[0].pares > 0)
+    throw {
+      status: 409,
+      message: `La caja tiene ${rows[0].pares} ${rows[0].pares === 1 ? "par" : "pares"} en la PO ${rows[0].pos}. Primero desasóciala`,
+    };
+}
+
 // Desasociar: la caja deja sus cartones y queda lista para volver a asignarse
 // (por ejemplo, si se va a abrir o corregir después de ligarla a una PO).
 async function desasociarCaja(caja_id, auditoria) {
@@ -119,15 +175,12 @@ async function resetCaja(caja_id, auditoria) {
     await client.query("BEGIN");
 
     const { rows: cajaRows } = await client.query(
-      "SELECT * FROM cajas WHERE id = $1",
+      "SELECT * FROM cajas WHERE id = $1 FOR UPDATE",
       [caja_id],
     );
     if (!cajaRows[0]) throw { status: 404, message: "Caja no encontrada" };
     const caja = cajaRows[0];
-
-    // Primero sale de los cartones donde estén sus pares (también los
-    // repartidos par por par o por PO), para no dejar QRs sueltos en cartones.
-    await quitarCajaDeCartones(client, caja);
+    await asegurarReseteable(client, caja);
 
     // Resetear QRs escaneados en esta caja a disponible
     await client.query(
@@ -143,10 +196,7 @@ async function resetCaja(caja_id, auditoria) {
     );
 
     // Resetear la caja
-    await client.query(
-      "UPDATE cajas SET estado = 'abierta', carton_id = NULL WHERE id = $1",
-      [caja_id],
-    );
+    await client.query("UPDATE cajas SET estado = 'abierta' WHERE id = $1", [caja_id]);
 
     const respuesta = { escaneos_borrados: rowCount, caja_id: parseInt(caja_id) };
     await registrar(client, auditoria, "caja", caja.id, caja.codigo_caja, respuesta);
@@ -222,82 +272,54 @@ async function resetCarton(carton_id, auditoria) {
   }
 }
 
-// Reset de una PO completa:
-// - Reset de todos los cartones de la PO
-// - Reset de todas las cajas de esos cartones
-// - Resetea estado de la PO a pendiente
+// Reset de una PO completa: lo mismo que resetear cada uno de sus cartones.
+// - Los pares metidos par por par (QR por QR, camas, divisiones, musicales)
+//   salen de los cartones y vuelven a escaneados, en su caja
+// - Las cajas que entraron completas se desligan y siguen completas
+// - Cartones y PO a pendiente
+// El escaneo de Producción no se toca: si una caja estaba mal, se corrige
+// aparte con su propio reset.
 async function resetPO(po_id, auditoria) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
     const { rows: poRows } = await client.query(
-      "SELECT * FROM purchase_orders WHERE id = $1",
+      "SELECT * FROM purchase_orders WHERE id = $1 FOR UPDATE",
       [po_id],
     );
     if (!poRows[0]) throw { status: 404, message: "PO no encontrada" };
     bloquearSiEnviada(poRows[0]);
 
-    // Obtener todos los cartones de la PO
     const { rows: cartones } = await client.query(
       "SELECT id FROM cartones WHERE po_id = $1",
       [po_id],
     );
     const cartonIds = cartones.map((c) => c.id);
 
-    let escaneosMusicales = 0;
+    let paresQuitados = 0;
     let cajasDesligadas = 0;
-    let escaneosCajas = 0;
 
     if (cartonIds.length) {
-      // Escaneos musicales → QRs a escaneado
       await client.query(
         `UPDATE codigos_qr SET estado = 'escaneado'
          WHERE id IN (SELECT codigo_qr_id FROM escaneos WHERE carton_id = ANY($1))`,
         [cartonIds],
       );
-      const { rowCount: em } = await client.query(
+      ({ rowCount: paresQuitados } = await client.query(
         "DELETE FROM escaneos WHERE carton_id = ANY($1)",
         [cartonIds],
-      );
-      escaneosMusicales = em;
-
-      // Cajas ligadas a esos cartones
-      const { rows: cajas } = await client.query(
-        "SELECT id FROM cajas WHERE carton_id = ANY($1)",
+      ));
+      ({ rowCount: cajasDesligadas } = await client.query(
+        "UPDATE cajas SET carton_id = NULL, estado = 'empacada' WHERE carton_id = ANY($1)",
         [cartonIds],
-      );
-      const cajaIds = cajas.map((c) => c.id);
-
-      if (cajaIds.length) {
-        // QRs de esas cajas → disponible
-        await client.query(
-          `UPDATE codigos_qr SET estado = 'disponible'
-           WHERE id IN (SELECT codigo_qr_id FROM escaneos WHERE caja_id = ANY($1))`,
-          [cajaIds],
-        );
-        const { rowCount: ec } = await client.query(
-          "DELETE FROM escaneos WHERE caja_id = ANY($1)",
-          [cajaIds],
-        );
-        escaneosCajas = ec;
-
-        // Resetear cajas
-        await client.query(
-          "UPDATE cajas SET estado = 'abierta', carton_id = NULL WHERE id = ANY($1)",
-          [cajaIds],
-        );
-        cajasDesligadas = cajaIds.length;
-      }
-
-      // Resetear cartones
+      ));
       await client.query(
         "UPDATE cartones SET estado = 'pendiente' WHERE id = ANY($1)",
         [cartonIds],
       );
     }
 
-    // Resetear PO
     await client.query(
       "UPDATE purchase_orders SET estado = 'pendiente' WHERE id = $1",
       [po_id],
@@ -307,8 +329,7 @@ async function resetPO(po_id, auditoria) {
       po_id: parseInt(po_id),
       cartones_reseteados: cartonIds.length,
       cajas_desligadas: cajasDesligadas,
-      escaneos_musicales_borrados: escaneosMusicales,
-      escaneos_cajas_borrados: escaneosCajas,
+      pares_sueltos_quitados: paresQuitados,
     };
     await registrar(client, auditoria, "po", poRows[0].id, poRows[0].po_number, respuesta);
     await client.query("COMMIT");
@@ -353,7 +374,8 @@ async function buscar(tipo, q = "") {
         LIMIT 25`,
       [patron],
     );
-    return rows;
+    const consolidadas = await cajasConsolidadas(pool, rows.map((r) => r.id));
+    return rows.map((r) => ({ ...r, consolidada: consolidadas.has(r.id) }));
   }
   if (tipo === "carton") {
     const { rows } = await pool.query(

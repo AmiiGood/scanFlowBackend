@@ -9,6 +9,7 @@ const CATALOGO = [
       { clave: "produccion.escanear", nombre: "Escanear en Producción", ayuda: "Abrir cajas, escanear pares y liberar cajas con gafete" },
       { clave: "embarque.escanear", nombre: "Embarque por cartón", ayuda: "Escanear cartones con cajas o QR por QR" },
       { clave: "embarque.musical_po", nombre: "Embarque musical por PO", ayuda: "Escribir la PO y escanear las cajas" },
+      { clave: "almacen.consolidar", nombre: "Consolidar cajas", ayuda: "Juntar en una caja los pares que les sobran a otras del mismo SKU" },
     ],
   },
   {

@@ -253,12 +253,32 @@ async function trazabilidadQR(codigo_qr) {
     [qr.id],
   );
 
+  // Si el par se movió de caja en almacén, cada movimiento.
+  let consolidaciones = [];
+  try {
+    ({ rows: consolidaciones } = await pool.query(
+      `SELECT to_char(k.created_at, 'YYYY-MM-DD HH24:MI:SS') AS fecha_hora,
+              co.codigo_caja AS caja_origen, cd.codigo_caja AS caja_destino,
+              u.nombre AS usuario
+         FROM consolidaciones k
+         JOIN cajas co ON co.id = k.caja_origen_id
+         JOIN cajas cd ON cd.id = k.caja_destino_id
+         LEFT JOIN users u ON u.id = k.created_by
+        WHERE k.codigo_qr_id = $1
+        ORDER BY k.created_at DESC, k.id DESC`,
+      [qr.id],
+    ));
+  } catch (err) {
+    if (err.code !== "42P01") throw err; // la migración aún no se corre
+  }
+
   const principal = escaneos[0] || {};
   return {
     ...qr,
     ...principal,
     escaneos,
     envios,
+    consolidaciones,
     total_escaneos: escaneos.length,
   };
 }

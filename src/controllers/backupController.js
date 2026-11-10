@@ -26,6 +26,8 @@ const SALT_ROUNDS = 12;
 
 // Tablas en orden de inserción (respeta FK)
 const TABLES_ORDERED = [
+  "perfiles",
+  "perfil_permisos",
   "users",
   "supervisores",
   "skus",
@@ -35,6 +37,7 @@ const TABLES_ORDERED = [
   "codigos_qr",
   "cajas",
   "escaneos",
+  "consolidaciones",
   "liberaciones_caja",
   "reseteos",
   "envios_trysor",
