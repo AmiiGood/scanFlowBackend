@@ -7,10 +7,11 @@ async function importPOs(req, res) {
   try {
     if (!req.file)
       return res.status(400).json({ error: "Archivo Excel requerido" });
+    const opciones = { quitarSobrantes: req.query.quitar_sobrantes === "1" };
     const result =
       req.query.modo === "validar"
-        ? await poImportService.analizar(req.file.buffer)
-        : await poImportService.importar(req.file.buffer);
+        ? await poImportService.analizar(req.file.buffer, opciones)
+        : await poImportService.importar(req.file.buffer, opciones);
     res.json(result);
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });

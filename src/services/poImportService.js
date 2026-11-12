@@ -40,7 +40,11 @@ const mismoContenido = (a, b) => {
 
 // Revisa el archivo completo contra la base y devuelve qué pasaría con cada PO
 // y cada cartón. No escribe nada.
-async function analizar(buffer) {
+// quitarSobrantes: los cartones que la PO ya tiene en ScanFlow y que no vienen
+// en el archivo se borran al cargar (pasa cuando cancelan una PO y la vuelven a
+// crear con otros cartones). Solo los vacíos: si alguno tiene pares, la PO no
+// se importa hasta hacerle Reset de PO.
+async function analizar(buffer, { quitarSobrantes = false } = {}) {
   const { poRows, cartonRows } = leerHojas(buffer);
   const erroresArchivo = [];
 
@@ -144,13 +148,17 @@ async function analizar(buffer) {
 
   const { rows: sobrantes } = poRowsDb.length
     ? await pool.query(
-        `SELECT po_id, COUNT(*)::int AS n FROM cartones
-          WHERE po_id = ANY($1) AND NOT (carton_id = ANY($2))
-          GROUP BY po_id`,
+        `SELECT c.id, c.po_id, c.carton_id,
+                (SELECT COUNT(*) FROM escaneos e WHERE e.carton_id = c.id)
+              + (SELECT COUNT(*) FROM cajas ca WHERE ca.carton_id = c.id) AS uso
+           FROM cartones c
+          WHERE c.po_id = ANY($1) AND NOT (c.carton_id = ANY($2))
+          ORDER BY c.carton_id`,
         [poRowsDb.map((p) => p.id), idsCarton],
       )
     : { rows: [] };
-  const sobrantesPorPo = new Map(sobrantes.map((r) => [r.po_id, r.n]));
+  const sobrantesPorPo = new Map();
+  for (const c of sobrantes) sobrantesPorPo.set(c.po_id, [...(sobrantesPorPo.get(c.po_id) || []), c]);
 
   // --- Veredicto por PO y por cartón
   const faltantes = new Map();
@@ -197,8 +205,24 @@ async function analizar(buffer) {
       p.avisos.push(`La hoja Po dice ${p.cantidad_cartones} cartones y la hoja Cartones trae ${p.cartones.size}`);
     if (esEntero(p.cantidad_pares) && paresHoja && paresHoja !== p.cantidad_pares)
       p.avisos.push(`La hoja Po dice ${p.cantidad_pares} pares y los cartones suman ${paresHoja}`);
-    if (db && sobrantesPorPo.get(db.id))
-      p.avisos.push(`${sobrantesPorPo.get(db.id)} cartones que ya están en ScanFlow no vienen en el archivo (no se borran)`);
+    const sobran = (db && sobrantesPorPo.get(db.id)) || [];
+    const conPares = sobran.filter((c) => Number(c.uso) > 0);
+    p.quitar = [];
+    if (sobran.length && !quitarSobrantes)
+      p.avisos.push(
+        `${sobran.length} ${sobran.length === 1 ? "cartón que ya está" : "cartones que ya están"} en ScanFlow no ${sobran.length === 1 ? "viene" : "vienen"} en el archivo. Se quedan, a menos que marques «Quitar los cartones que ya no vienen»`,
+      );
+    else if (conPares.length)
+      p.errores.push(
+        `${conPares.length} de los cartones que ya no vienen ${conPares.length === 1 ? "tiene" : "tienen"} pares escaneados (${conPares
+          .slice(0, 5)
+          .map((c) => c.carton_id)
+          .join(", ")}${conPares.length > 5 ? "…" : ""}). Haz Reset de PO y vuelve a importar`,
+      );
+    else if (sobran.length) {
+      p.quitar = sobran;
+      p.avisos.push(`Se ${sobran.length === 1 ? "quitará 1 cartón que ya no viene" : `quitarán ${sobran.length} cartones que ya no vienen`} en el archivo`);
+    }
 
     resultadoPos.push({
       po_number: p.po_number,
@@ -208,6 +232,8 @@ async function analizar(buffer) {
       cantidad_cartones: p.cantidad_cartones,
       cartones_en_archivo: p.cartones.size,
       ...cuenta,
+      sobrantes: sobran.length,
+      quitados: p.errores.length ? 0 : p.quitar.length,
       estado: p.errores.length ? "error" : cuenta.rechazado ? "incompleta" : "ok",
       errores: p.errores,
       avisos: p.avisos,
@@ -247,6 +273,8 @@ async function analizar(buffer) {
       cartones_actualizados: suma("actualiza"),
       cartones_sin_cambios: suma("sin_cambios"),
       cartones_rechazados: suma("rechazado"),
+      cartones_sobrantes: suma("sobrantes"),
+      cartones_quitados: suma("quitados"),
     },
     errores_archivo: erroresArchivo,
     faltantes: listaFaltantes,
@@ -274,8 +302,8 @@ async function recalcularEstado(client, po_id) {
 
 // Carga lo válido: POs sin error y, dentro de ellas, los cartones nuevos o
 // con cambios. Los rechazados no se tocan. Cada PO va en su transacción.
-async function importar(buffer) {
-  const analisis = await analizar(buffer);
+async function importar(buffer, opciones = {}) {
+  const analisis = await analizar(buffer, opciones);
   const detalle = analisis._detalle;
   delete analisis._detalle;
 
@@ -332,6 +360,19 @@ async function importar(buffer) {
           [ids, sk, cant],
         );
       }
+      if (p.quitar.length) {
+        // Se vuelve a revisar que sigan vacíos: alguien pudo escanear entre la
+        // revisión y la carga.
+        const { rowCount } = await client.query(
+          `DELETE FROM cartones c
+            WHERE c.id = ANY($1)
+              AND NOT EXISTS (SELECT 1 FROM escaneos e WHERE e.carton_id = c.id)
+              AND NOT EXISTS (SELECT 1 FROM cajas ca WHERE ca.carton_id = c.id)`,
+          [p.quitar.map((c) => c.id)],
+        );
+        if (rowCount !== p.quitar.length)
+          throw new Error("un cartón que ya no viene recibió pares mientras se importaba; vuelve a revisar el archivo");
+      }
       await recalcularEstado(client, po_id);
       await client.query("COMMIT");
       res.cargada = true;
@@ -348,8 +389,8 @@ async function importar(buffer) {
 }
 
 // Para el validador: quita la estructura interna antes de responder.
-async function analizarParaCliente(buffer) {
-  const a = await analizar(buffer);
+async function analizarParaCliente(buffer, opciones) {
+  const a = await analizar(buffer, opciones);
   delete a._detalle;
   return a;
 }
